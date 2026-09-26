@@ -1,0 +1,346 @@
+{
+  "enabled": {
+    "description": "启用 SuperAI 增强",
+    "type": "bool",
+    "hint": "关闭后 SuperAI 的钩子与指令会直接跳过，不影响 AstrBot 原流程。",
+    "default": true
+  },
+  "enabled_tasks": {
+    "description": "启用增强的任务类型",
+    "type": "list",
+    "hint": "选择需要 SuperAI 接管的任务。chat=普通对话，agent=Agent/工具调用，long_context=长上下文对话，image=图片理解。",
+    "options": ["chat", "agent", "long_context", "image"],
+    "default": ["chat", "agent", "long_context"]
+  },
+  "debug": {
+    "description": "调试日志",
+    "type": "bool",
+    "hint": "开启后会输出路由决策、记忆命中、工具调用等详细日志。",
+    "default": false
+  },
+  "router": {
+    "description": "模型路由（SuperRouter）",
+    "type": "object",
+    "hint": "按任务特征自动选择最合适的模型，并支持失败自动降级。",
+    "items": {
+      "enabled": {
+        "description": "启用模型路由",
+        "type": "bool",
+        "default": true
+      },
+      "strategy": {
+        "description": "路由策略",
+        "type": "string",
+        "options": ["rule", "auto", "cheap_first", "quality_first"],
+        "labels": ["规则优先", "智能启发式", "优先省钱", "优先质量"],
+        "hint": "rule=按关键词规则；auto=按长度与内容自动判断；cheap_first=尽量用便宜模型；quality_first=尽量用强模型。",
+        "default": "rule"
+      },
+      "fallback_enabled": {
+        "description": "失败自动降级",
+        "type": "bool",
+        "hint": "主模型请求失败时，按降级链依次尝试其它模型。",
+        "default": true
+      },
+      "max_retries": {
+        "description": "最大重试次数",
+        "type": "int",
+        "hint": "超出此数量的降级候选会被裁剪，避免单次请求耗时过长。",
+        "default": 2
+      },
+      "timeout": {
+        "description": "单次请求超时（秒）",
+        "type": "int",
+        "default": 120
+      },
+      "cheap_provider_id": {
+        "description": "低成本模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "处理闲聊、翻译、改写等简单请求。留空表示不启用该档位。",
+        "default": ""
+      },
+      "strong_provider_id": {
+        "description": "高质量模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "处理写作、代码、总结等需要输出质量的请求。",
+        "default": ""
+      },
+      "reasoning_provider_id": {
+        "description": "推理模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "处理数学、逻辑、排错等需要深度思考的请求。",
+        "default": ""
+      },
+      "vision_provider_id": {
+        "description": "视觉模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "处理带图片的请求。",
+        "default": ""
+      },
+      "long_context_provider_id": {
+        "description": "长上下文模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "处理超长上下文请求。",
+        "default": ""
+      },
+      "long_context_tokens": {
+        "description": "长上下文阈值（tokens）",
+        "type": "int",
+        "hint": "上下文估算超过该值时切换到长上下文模型。",
+        "default": 64000
+      },
+      "keyword_map": {
+        "description": "自定义关键词路由",
+        "type": "dict",
+        "items": {},
+        "hint": "键=关键词，值=档位（cheap/strong/reasoning/vision/long_context）。命中关键词即切到对应档位。",
+        "default": {}
+      }
+    }
+  },
+  "memory": {
+    "description": "记忆与摘要（SuperMemory）",
+    "type": "object",
+    "hint": "滚动摘要控制上下文长度，长期记忆保留用户偏好与事实。",
+    "items": {
+      "enabled": {
+        "description": "启用记忆增强",
+        "type": "bool",
+        "default": true
+      },
+      "auto_summary": {
+        "description": "自动生成对话摘要",
+        "type": "bool",
+        "hint": "超过触发轮数后，用便宜模型压缩历史，降低 token 消耗。",
+        "default": true
+      },
+      "summary_trigger_rounds": {
+        "description": "摘要触发轮数",
+        "type": "int",
+        "hint": "累计对话条数超过该值后生成一次摘要。",
+        "default": 12
+      },
+      "summary_provider_id": {
+        "description": "摘要专用模型",
+        "type": "string",
+        "_special": "select_provider",
+        "hint": "留空则使用「低成本模型」档位。建议用便宜的小模型。",
+        "default": ""
+      },
+      "summary_max_chars": {
+        "description": "摘要最大长度（字）",
+        "type": "int",
+        "default": 600
+      },
+      "long_term_enabled": {
+        "description": "启用长期记忆",
+        "type": "bool",
+        "hint": "自动抽取用户偏好与事实，并在后续对话中按相关性注入。",
+        "default": true
+      },
+      "long_term_top_k": {
+        "description": "记忆注入条数",
+        "type": "int",
+        "hint": "每轮最多注入多少条相关记忆。",
+        "default": 5
+      },
+      "extract_facts": {
+        "description": "自动抽取事实",
+        "type": "bool",
+        "hint": "关闭后只能通过模型调用工具或用户显式「记住」来写入记忆。",
+        "default": true
+      },
+      "inject_into_prompt": {
+        "description": "把记忆注入提示词",
+        "type": "bool",
+        "hint": "关闭后记忆只在模型主动调用检索工具时使用。",
+        "default": true
+      },
+      "decay_half_life_days": {
+        "description": "记忆权重半衰期（天）",
+        "type": "int",
+        "hint": "长时间未命中的记忆权重会衰减，低于阈值后自动清理。",
+        "default": 30
+      }
+    }
+  },
+  "web": {
+    "description": "联网搜索",
+    "type": "object",
+    "hint": "为 Agent 提供实时信息检索能力。",
+    "items": {
+      "enabled": {
+        "description": "启用联网搜索",
+        "type": "bool",
+        "default": false
+      },
+      "engine": {
+        "description": "搜索引擎",
+        "type": "string",
+        "options": ["duckduckgo", "searxng"],
+        "labels": ["DuckDuckGo（免 Key）", "SearXNG（自建）"],
+        "default": "duckduckgo"
+      },
+      "searxng_base": {
+        "description": "SearXNG 实例地址",
+        "type": "string",
+        "hint": "例如 https://searx.example.com，需开启 JSON 输出格式。",
+        "default": ""
+      },
+      "api_key": {
+        "description": "搜索服务 API Key",
+        "type": "string",
+        "secret": true,
+        "hint": "仅自建 SearXNG 需要鉴权时填写。",
+        "default": ""
+      },
+      "max_results": {
+        "description": "返回结果条数",
+        "type": "int",
+        "default": 5
+      },
+      "timeout": {
+        "description": "超时（秒）",
+        "type": "int",
+        "default": 15
+      }
+    }
+  },
+  "knowledge_base": {
+    "description": "知识库增强",
+    "type": "object",
+    "hint": "让模型按需检索 AstrBot 已配置的知识库。",
+    "items": {
+      "enabled": {
+        "description": "启用知识库工具",
+        "type": "bool",
+        "default": false
+      },
+      "kb_names": {
+        "description": "默认知识库",
+        "type": "list",
+        "_special": "select_knowledgebase",
+        "hint": "模型调用检索工具且未指定知识库时使用这里的选择。",
+        "default": []
+      },
+      "top_k": {
+        "description": "检索条数",
+        "type": "int",
+        "default": 5
+      }
+    }
+  },
+  "agent": {
+    "description": "Agent 设定",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 Agent 工具调用",
+        "type": "bool",
+        "hint": "关闭后 /ai 只做纯文本生成，不调用任何工具。",
+        "default": true
+      },
+      "max_steps": {
+        "description": "最大工具调用步数",
+        "type": "int",
+        "default": 12
+      },
+      "tool_call_timeout": {
+        "description": "工具调用超时（秒）",
+        "type": "int",
+        "default": 60
+      },
+      "system_prompt": {
+        "description": "附加系统提示词",
+        "type": "text",
+        "hint": "会追加到 system_prompt，用于设定 SuperAI 的角色与风格。",
+        "default": ""
+      }
+    }
+  },
+  "commands": {
+    "description": "指令行为",
+    "type": "object",
+    "items": {
+      "allow_groups": {
+        "description": "允许使用的群",
+        "type": "list",
+        "hint": "留空表示所有群都允许。",
+        "default": []
+      },
+      "deny_groups": {
+        "description": "禁止使用的群",
+        "type": "list",
+        "hint": "优先级高于允许列表。",
+        "default": []
+      },
+      "cooldown_seconds": {
+        "description": "指令冷却（秒）",
+        "type": "int",
+        "default": 3
+      },
+      "max_input_chars": {
+        "description": "单次输入上限（字符）",
+        "type": "int",
+        "default": 4000
+      }
+    }
+  },
+  "metrics": {
+    "description": "用量统计与配额",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用用量统计",
+        "type": "bool",
+        "default": true
+      },
+      "daily_token_budget": {
+        "description": "每日 Token 上限",
+        "type": "int",
+        "hint": "0 表示不限制。达到上限后 SuperAI 会拒绝新请求。",
+        "default": 0
+      },
+      "daily_request_budget": {
+        "description": "每日请求数上限",
+        "type": "int",
+        "hint": "0 表示不限制。",
+        "default": 0
+      },
+      "retention_days": {
+        "description": "统计数据保留天数",
+        "type": "int",
+        "default": 30
+      }
+    }
+  },
+  "workflow": {
+    "description": "工作流编排",
+    "type": "object",
+    "hint": "把多步 AI 任务配置化，支持 {{prev}} 引用上一步结果、{{input}} 引用用户输入。",
+    "items": {
+      "enabled": {
+        "description": "启用工作流",
+        "type": "bool",
+        "default": true
+      },
+      "max_steps": {
+        "description": "单个工作流最大步数",
+        "type": "int",
+        "default": 8
+      },
+      "workflows": {
+        "description": "工作流定义",
+        "type": "dict",
+        "items": {},
+        "hint": "键=工作流名称，值={\"description\": \"说明\", \"route\": \"cheap\", \"steps\": [{\"name\": \"步骤名\", \"prompt\": \"指令\"}]}。",
+        "default": {}
+      }
+    }
+  }
+}

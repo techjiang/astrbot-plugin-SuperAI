@@ -1,0 +1,40 @@
+{
+  "metadata": {
+    "display_name": "SuperAI",
+    "short_desc": "新一代 AstrBot AI 增强插件：多模型路由、智能记忆、Agent 与知识库增强。",
+    "desc": "SuperAI 是面向 AstrBot 的 AI 增强插件，把模型路由、自动降级、智能记忆与摘要、联网增强、知识库问答、AI 快捷指令、工作流编排、用量统计与成本控制打包成一套可视化的 AI 基建。"
+  },
+  "config": {
+    "enabled": {"description": "启用 SuperAI 增强"},
+    "enabled_tasks": {"description": "启用增强的任务类型"},
+    "debug": {"description": "调试日志"},
+    "router": {"description": "模型路由（SuperRouter）"},
+    "memory": {"description": "记忆与摘要（SuperMemory）"},
+    "web": {"description": "联网搜索"},
+    "knowledge_base": {"description": "知识库增强"},
+    "agent": {"description": "Agent 设定"},
+    "commands": {"description": "指令行为"},
+    "metrics": {"description": "用量统计与配额"},
+    "workflow": {"description": "工作流编排"}
+  },
+  "pages": {
+    "studio": {
+      "title": "SuperAI Studio",
+      "description": "查看运行状态、路由档位、工具清单与用量统计。",
+      "heading": "SuperAI Studio",
+      "refresh": "刷新",
+      "status": "运行状态",
+      "tools": "已注册工具",
+      "stats": "用量统计",
+      "memory": "记忆查询",
+      "session": "会话 UMO",
+      "search": "检索",
+      "clear": "清空记忆",
+      "requests": "请求数",
+      "tokens": "Token",
+      "latency": "平均耗时",
+      "providers": "模型分布",
+      "routes": "路由分布"
+    }
+  }
+}

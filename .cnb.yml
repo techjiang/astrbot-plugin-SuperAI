@@ -1,0 +1,39 @@
+# SuperAI 流水线：代码风格检查 + 单元测试
+#
+# AstrBot 本体要求 Python >= 3.12，因此这里直接使用 python:3.12 镜像，
+# 无需安装额外系统依赖（插件运行只依赖 aiohttp，AstrBot 已内置）。
+
+main:
+  push:
+    - name: lint-and-test
+      docker:
+        image: python:3.12-slim
+      stages:
+        - name: 安装依赖
+          script: |
+            pip install --no-cache-dir -U pip
+            pip install --no-cache-dir ruff pytest pytest-asyncio typing_extensions
+        - name: 代码风格检查
+          script:
+            - ruff check .
+            - ruff format --check .
+        - name: 单元测试
+          script:
+            - python -m pytest tests
+
+  pull_request:
+    - name: lint-and-test
+      docker:
+        image: python:3.12-slim
+      stages:
+        - name: 安装依赖
+          script: |
+            pip install --no-cache-dir -U pip
+            pip install --no-cache-dir ruff pytest pytest-asyncio typing_extensions
+        - name: 代码风格检查
+          script:
+            - ruff check .
+            - ruff format --check .
+        - name: 单元测试
+          script:
+            - python -m pytest tests
