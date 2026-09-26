@@ -1,7 +1,8 @@
 # SuperAI 流水线：代码风格检查 + 单元测试
 #
-# AstrBot 本体要求 Python >= 3.12，因此这里直接使用 python:3.12 镜像，
-# 无需安装额外系统依赖（插件运行只依赖 aiohttp，AstrBot 已内置）。
+# AstrBot 本体要求 Python >= 3.12，因此这里直接使用 python:3.12 镜像。
+# 插件运行依赖（requirements.txt，如 aiohttp）由 AstrBot 内置，
+# 但测试环境没有 AstrBot，因此 CI 需显式安装运行依赖 + 测试依赖。
 
 main:
   push:
@@ -12,7 +13,8 @@ main:
         - name: 安装依赖
           script: |
             pip install --no-cache-dir -U pip
-            pip install --no-cache-dir ruff pytest pytest-asyncio typing_extensions
+            pip install --no-cache-dir -r requirements.txt
+            pip install --no-cache-dir -r requirements-dev.txt
         - name: 代码风格检查
           script:
             - ruff check .
@@ -29,7 +31,8 @@ main:
         - name: 安装依赖
           script: |
             pip install --no-cache-dir -U pip
-            pip install --no-cache-dir ruff pytest pytest-asyncio typing_extensions
+            pip install --no-cache-dir -r requirements.txt
+            pip install --no-cache-dir -r requirements-dev.txt
         - name: 代码风格检查
           script:
             - ruff check .

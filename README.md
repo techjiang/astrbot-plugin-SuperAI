@@ -108,7 +108,7 @@ AstrBot 本身已经很好用，但当你真正把它跑在群里，很快就会
 2. 重启 AstrBot，或在插件页点击「重载插件」；
 3. 进入插件配置，为各路由档位选择模型（至少配置一个）。
 
-> **依赖**：插件仅依赖 `aiohttp`，AstrBot 已内置，无需额外安装。
+> **依赖**：插件仅依赖 `aiohttp`，AstrBot 已内置，无需额外安装；如在无 AstrBot 的环境中运行测试，请先 `pip install -r requirements.txt -r requirements-dev.txt`。
 > **版本要求**：AstrBot >= 4.5.7（使用了 `llm_generate` / `tool_loop_agent` 等新 SDK）。
 
 ## 快速上手
@@ -182,9 +182,10 @@ superai/
 ## 开发
 
 ```bash
-# 依赖
+# 运行依赖（AstrBot 已内置 aiohttp；单独跑测试时需自行安装）
 pip install -r requirements.txt
-pip install ruff pytest pytest-asyncio typing_extensions
+# 开发 / CI 依赖（ruff + pytest 等）
+pip install -r requirements-dev.txt
 
 # 代码风格
 ruff check .

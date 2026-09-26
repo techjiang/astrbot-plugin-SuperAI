@@ -21,4 +21,5 @@
 - **持久化**：记忆、摘要、工作流运行记录、统计数据均落盘到
   `data/plugin_data/astrbot_plugin_superai/`。
 - **国际化**：`zh-CN` / `en-US` 插件与页面文案。
-- **测试与流水线**：75 个单元/冒烟测试，ruff 风格检查，CNB 流水线配置。
+- **测试与流水线**：73 个单元/冒烟测试（含 CI 依赖完整性校验），ruff 风格检查，
+  CNB 流水线显式安装 `requirements.txt` 与 `requirements-dev.txt`。
