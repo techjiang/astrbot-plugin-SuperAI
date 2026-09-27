@@ -44,7 +44,28 @@ git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plu
 
 ## 安装后必做检查
 
-1. **插件列表**：出现 `SuperAI`，图标为仓库根目录的 `logo.png`；
+1. **插件列表**：出现 `SuperAI`，且**图标是项目 Logo**（不是默认灰图标）。
+
+   图标由 AstrBot 的 `PluginManager._get_plugin_logo()` 提供 ——
+   它在**插件目录根下**按固定顺序找文件：
+
+   ```
+   logo.png  >  logo.jpg  >  logo.jpeg  >  logo.webp  >  logo.svg
+   ```
+
+   找不到就回落到默认图标，**不会打任何日志**。所以「插件列表里图标不对」
+   几乎总是下面几种情况之一：
+
+   | 现象 | 原因 |
+   | --- | --- |
+   | 显示默认图标 | `logo.png` 不在插件目录**根**下（被套进了子目录） |
+   | 显示默认图标 | 文件被改名（如 `Logo.PNG`、`icon.png`） |
+   | 破图 / 空白 | 文件名是 `logo.png`，内容却是 SVG / JPEG（改了扩展名） |
+   | 边缘有白毛刺 | 用了白底图而不是透明背景图 |
+
+   本项目对上述每一条都有测试守住（`tests/test_logo_and_metadata.py`），
+   改图片后跑一次 `python -m pytest tests/test_logo_and_metadata.py` 即可。
+
 2. **日志**：出现 `[SuperAI] vX.Y.Z 已加载 | 路由=开 记忆=开 ...`，
    且**没有**下面这类行：
    - `Plugin astrbot_plugin_superai has neither main.py nor astrbot_plugin_superai.py; skipping it.`
@@ -137,17 +158,22 @@ git pull
 | `display_name` | `SuperAI` | 市场展示名 |
 | `short_desc` | 一句话简介 | 市场卡片文案 |
 | `version` | 与 `superai/version.py` 一致 | 更新检测依据 |
-| `author` | `cosc` | **稳定的包身份**，不可改为展示名 |
+| `author` | `TechSauce` | **稳定的包身份**（插件作者「科技酱」），不可改为展示名 |
 | `repo` | GitHub 镜像地址 | 官方商店读取与更新检测入口 |
 | `social_link` | `https://docs.asoe.cn` | 作者主页，进入市场索引 |
 | `tags` | 8 个标签 | 市场搜索与分类依据 |
 | `astrbot_version` | `>=4.5.7` | PEP 440 范围 |
 | `support_platforms` | 9 个平台 | 必须是官方 `ADAPTER_NAME_2_TYPE` 的 key |
 
-> `author` 与 `name` 共同构成 `plugin_id = author/name`，是插件在市场中的
-> **全局唯一标识**，也是已安装插件匹配更新的依据。改动它会导致老用户
-> 无法收到更新 —— `tests/test_repo_health.py` 有断言守住这一点。
+> `author` 与 `name` 共同构成 `plugin_id = TechSauce/astrbot_plugin_superai`，
+> 是插件在市场中的**全局唯一标识**，也是已安装插件匹配更新的依据。
+> 改动它会导致老用户**收不到更新**，必须重新安装。
+>
+> 商店卡片上的「作者」直接读 `author` 字段，因此它写成平台账号
+> （如 `cosc`）会让市场显示错误的作者信息 —— 这是 Issue #1 报告的问题。
+> `tests/test_logo_and_metadata.py` 与 `tests/test_repo_health.py`
+> 都有断言守住「它是插件作者、且与 README 的「关于作者」一致」。
 
 ---
 
-**最后核对**：`v0.2.5`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）
+**最后核对**：`v0.2.6`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）

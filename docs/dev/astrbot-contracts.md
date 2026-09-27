@@ -42,6 +42,58 @@ positional argument: 'req'`，且异常被 `call_event_hook()` 吞掉只记一�
 
 （同上；`test_plugin_loader_contract.py` 另有一条测试禁止入口使用相对导入）
 
+## 图标与市场元数据
+
+### 图标只认插件根目录的 `logo.png`
+
+框架里是写死的（`astrbot/core/star/star_manager.py`）：
+
+```python
+self.logo_fname = "logo.png"  # 第 213 行
+...
+logo_path = os.path.join(plugin_dir_path, self.logo_fname)
+if os.path.exists(logo_path):  # 第 1376 行
+    metadata.logo_path = logo_path
+```
+
+注意三件事：
+
+1. **只有一个文件名**。换成 `logo.svg` / `logo.jpg` 不会被识别 ——
+   文件夹里放着也没用，框架根本不看。
+2. **只做一次 `os.path.exists`**。找不到就回落到默认图标，
+   **一行日志都不打**，所以「图标没显示」查日志查不出任何东西。
+3. **必须是真 PNG**。把 SVG / JPEG 改扩展名成 `logo.png`，
+   框架照文件名交出去，浏览器解码失败就是一个破图。
+
+WebUI 那一侧是另一条链路：`PluginService.resolve_plugin_logo_url()`
+把 `logo_path` 注册成临时 token，前端再请求 `/api/file/<token>`。
+所以「插件列表图标」与 `pages/studio/logo.png`（静态路由）互不影响，
+两条都要各自保证是有效 PNG。
+
+（`tests/test_logo_and_metadata.py`：位置/文件名/大小写/真实格式/PNG 结构/
+分辨率/透明背景/多余变体，共 12 项；`scripts/e2e_smoke.py` 用框架真实的
+`logo_fname` 复刻查找过程）
+
+### `metadata.yaml` 的 `author` 是商店卡片的「作者」
+
+市场卡片直接读 `metadata.yaml` 的 `author`。它同时参与
+
+```python
+plugin_id = metadata.author + "/" + metadata.name
+```
+
+这是插件在市场里的**全局唯一标识**，也是已安装用户匹配更新的依据。
+
+- 写成平台账号（如 `cosc`）→ 商店里显示错误的作者；
+- 发布之后再改 → 老用户**收不到更新**，必须重新安装。
+
+因此本项目约定：`author` 用作者「科技酱」的**包身份** `TechSauce`
+（无空格、无中文，各平台解析行为一致），展示名「科技酱」写在 README 与
+`display_name` / `desc` 里。两者的一致性由测试锁住。
+
+（`tests/test_logo_and_metadata.py`、`tests/test_repo_health.py`、
+`tests/test_framework_lifecycle.py`：都断言 `author == "TechSauce"`）
+
 ## LLM 钩子的形态
 
 ### 钩子必须是普通协程，不能是 async generator
@@ -181,6 +233,9 @@ SuperAI 记录 `decayed_at`，让衰减幂等。
 - [ ] 新增工具后，`_claim_tools()` 还在 `add_llm_tools()` **之后**调用吗？
 - [ ] 所有提前 `return` 的路径都不会泄漏 `_request_started` 吗？
 - [ ] 新增三方 import 已写进 `requirements.txt` 吗？
+- [ ] 换图标后还是 `logo.png`、真 PNG、放在插件根目录吗？
+      （`python -m pytest tests/test_logo_and_metadata.py` 一把过）
+- [ ] 改 `metadata.yaml` 的 `author` 了吗？——**发布后不要改**，会影响更新检测
 - [ ] `ruff check .` / `ruff format --check .` / `python -m pytest tests` 通过了吗？
 
 ## 相关文档
@@ -190,4 +245,4 @@ SuperAI 记录 `decayed_at`，让衰减幂等。
 
 ---
 
-**最后核对**：`v0.2.5`（逐条对照 `tests/` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.6`（逐条对照 `tests/` 与测试断言，无凭空描述）

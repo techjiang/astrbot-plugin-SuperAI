@@ -10,7 +10,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.5-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.6-orange)](./metadata.yaml)
 [![Docs](https://img.shields.io/badge/docs-%E4%B8%AD%E6%96%87-blue)](./docs/README.md)
 
 [文档](./docs/README.md) ·
@@ -255,7 +255,7 @@ AstrBot 与 SuperAI 版本、`/superai status` 输出、调试日志（请脱敏
 
 ## 关于作者
 
-科技酱
+**科技酱**（插件包身份 `TechSauce`）
 
 - 官网：https://docs.asoe.cn
 - GitHub：https://github.com/techjiang/
@@ -263,6 +263,11 @@ AstrBot 与 SuperAI 版本、`/superai status` 输出、调试日志（请脱敏
 - 玲珑社区：https://forums.asoe.cn/
 - QQ 群：291974598
 - QQ 群②：474819022
+
+> AstrBot 插件市场卡片上的「作者」读取的是 `metadata.yaml` 的 `author` 字段。
+> 它同时参与 `plugin_id = author/name`，是插件在市场里的全局唯一标识，
+> 也是老用户匹配更新的依据 —— **请勿随意改动**。
+> 一旦改动，已安装用户会收不到更新，需要重新安装。
 
 ## 源码仓库
 

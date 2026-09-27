@@ -121,4 +121,4 @@ ASTRBOT_REF=/tmp/astrbot-ref python scripts/e2e_smoke.py  # 单独跑联调
 
 ---
 
-**最后核对**：`v0.2.5`（逐条对照 `.cnb.yml` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.6`（逐条对照 `.cnb.yml` 与测试断言，无凭空描述）

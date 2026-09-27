@@ -77,4 +77,4 @@ AstrBot WebUI → 插件 → SuperAI → **SuperAI Studio**（`pages/studio/`）
 
 ---
 
-**最后核对**：`v0.2.5`（逐条对照 `quickstart` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.6`（逐条对照 `quickstart` 与测试断言，无凭空描述）

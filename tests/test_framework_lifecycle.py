@@ -162,7 +162,9 @@ def test_metadata_loaded_from_yaml(loaded_plugin):
     assert md.name == "astrbot_plugin_superai"
     assert md.display_name == "SuperAI"
     assert md.short_desc, "short_desc 会用于插件市场卡片，必须存在"
-    assert md.author == "cosc"
+    # 商店卡片上的「作者」就是 md.author。它必须是插件作者而不是平台账号 ——
+    # 回归（Issue #1）：这里一度是平台账号 cosc，导致市场显示错误作者。
+    assert md.author == "TechSauce"
     assert md.repo, "repo 用于来源归属与更新检测，不能为空"
     assert md.astrbot_version == ">=4.5.7"
     assert md.pages and md.pages[0]["name"] == "studio"
