@@ -2,6 +2,190 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.5
+
+这一版把**发布通道打通**：`repo` 从 CNB 地址改为 GitHub 仓库，插件可以正式提交
+AstrBot 官方插件市场；同时把 v0.2.4 的修复合并进 `main`，形成可发布的稳定基线。
+
+### 变更
+
+- **`metadata.yaml` 的 `repo` 改指 GitHub**：
+  `https://github.com/techjiang/astrbot-plugin-SuperAI`。
+  官方发布入口 <https://cloud.astrbot.app/publish> 只支持 GitHub 仓库（GitHub App
+  授权后读取仓库里的 `metadata.yaml`）或 ZIP 上传，`repo` 必须是 GitHub 地址才
+  能被提交与索引 —— 市场现有的插件 `repo` 全部是 `github.com/<owner>/<repo>`。
+- **版本号 v0.2.4 → v0.2.5**。`superai/version.py`、`metadata.yaml`、README 徽章与
+  各篇文档的「最后核对」标注同步更新（三方一致性由测试守住）。
+- **`main` 合并 v0.2.4**（PR #4）。此前 v0.2.4 的 tag 打在功能分支的提交上，
+  `main` 仍停留在 v0.2.3；现在 `main` 即发布基线。
+
+### 说明
+
+- 本仓库仍托管在 CNB，日常开发、CI 与 Release 都在 CNB；GitHub 仓库作为
+  **发布镜像**，用于官方商店提交与 GitHub 用户安装。
+- **无破坏性变更**：配置项、数据格式、指令签名与 v0.2.4 完全一致。
+
+## v0.2.4
+
+这一版做两件事：**按要求修正 AstrBot 官方商店发布信息**，以及
+**再一次深挖「静默失效」类缺陷** —— 这轮找到了一个比之前所有问题都更隐蔽的
+Bug：它只影响「已经产生过摘要」的会话，而且**永远不会报错、永远不会写日志**。
+
+### 修复（功能性）
+
+- **自动事实抽取对「任何产生过摘要的会话」永久失效**（本轮最严重）。
+  ``_prepare_memory`` 里曾经写成：
+
+  ```python
+  summary = await self.memory_service.maybe_summarize(session, history)
+  if summary:
+      return summary  # ← 这一行是元凶
+  if self._should_extract_facts(session, history):
+      ...  # 后台抽取事实
+  ```
+
+  ``maybe_summarize`` 在**未达到摘要阈值**时会把**已有摘要**原样返回
+  （这是它设计上的行为：调用方需要拿到「当前摘要」）。而摘要一旦生成过
+  就一直非空 —— 于是后面那段在几乎所有轮次里都不可达。
+
+  表现：用户的长期记忆只能靠手动 ``/superai memory add`` 或模型调用
+  ``superai_remember`` 工具来写；「自动抽取偏好与事实」这个主打功能
+  **一次都不会执行**。日志干净、单测全绿、CI 通过，只有把
+  「摘要非空」与「应触发抽取」两个条件放在一起测才能发现。
+
+  现在改为无条件执行抽取判断（是否真的抽取由 ``_should_extract_facts``
+  的节流逻辑决定），并新增结构性断言防止该写法被重新引入。
+
+- **只读统计接口会凭空造出「幽灵日期」，污染趋势与保留窗口**。
+  ``MetricsCollector.today_stats()`` 经由 ``_bucket()`` **无条件**
+  ``self._days[key] = stats``，而它是被 ``/superai status``、Studio 面板与
+  每日预算检查调用的**只读**接口。后果：
+
+  1. 只要用户打开过面板，即使当天一条消息都没有，也会多出一个
+     「0 请求」的日期；
+  2. 它会挤占 ``retention_days`` 的保留名额，把真正的历史数据挤出裁剪窗口；
+  3. 「最近 N 天趋势」里出现无意义的 0 值空洞。
+
+  现在 ``_bucket(create=False)`` 只读返回临时桶（不落盘、不进 ``_days``），
+  写入路径行为不变。
+
+- **``MemoryStore.search()`` 的 ``min_relevance`` 是死参数**。
+  它写在签名里、写在文档里（还附带一大段关于「稳定偏好」的解释），
+  但实现中**从未被读取** —— 调用方以为过滤生效了，实际拿到的是
+  「权重最高的若干条」。现在两条返回路径都会真正应用它：
+  ``> 0`` 时只回落到 ``preference`` 类稳定偏好。
+
+- **``router.ordered_candidates()`` 绕开了「不健康」判定里的一道保护**。
+  ``is_unhealthy()`` 的语义是「连续失败达到阈值，**而且还有别的可用 provider**」
+  （否则所有模型都在报错时会把全部候选都判为不健康，反而失去意义）。
+  ``ordered_candidates`` 调用时没有传 ``available_ids``，等于绕开了这道保护。
+  虽然排序结果碰巧相同，但语义已经错了 —— 单模型部署下唯一可用的模型
+  会被标记为「不健康」。现在把链上实际候选作为 ``available_ids`` 传入。
+
+### 修复（发布信息 / AstrBot 官方商店）
+
+- **``metadata.author`` 改回 ``cosc``**。
+  AstrBot 插件市场规范（Schema Version 1）把 ``plugin_id`` 定义为
+  ``metadata.author + "/" + metadata.name``，且明确要求
+  「``author`` 和 ``name`` 应该是**稳定的包身份值**，而不是展示名」。
+  它是插件在市场里的全局唯一标识，也是已安装插件匹配更新的依据 ——
+  改成展示名「科技酱」会让老用户无法收到更新。
+  「科技酱」作为作者展示信息保留在 README 的「关于作者」章节。
+
+- **补齐市场可选字段**：``tags``（8 个：AI / LLM / 模型路由 / 记忆 / 知识库 /
+  Agent / 工作流 / 用量统计）与 ``social_link``（作者官网）。
+  两者都会进入插件市场的**搜索与分类**索引（见
+  ``dashboard/src/utils/pluginSearch.js``），不填就等于在市场里搜不到。
+
+- **``astrbot_version`` 保持 ``>=4.5.7``**：已用 PEP 440 ``SpecifierSet``
+  校验可被框架解析，且满足当前 AstrBot 4.28.1。
+
+### 工程
+
+- 新增 ``tests/test_framework_lifecycle.py``（21 项）：
+  用**真实 ``PluginManager`` 完整加载插件**（发现入口 → import →
+  读 metadata → 注册工具 → 绑定 self → ``initialize()``），
+  再按框架语义驱动钩子与全部指令。它能拦住「每个局部单测都过、
+  但整体集成后失效」的问题（例如 metadata 版本校验不过、
+  指令注册了但 filter 匹配不到、``initialize()`` 抛异常导致插件被回滚）。
+  缺少真实 AstrBot 源码时整体 skip。
+- 新增 ``tests/test_memory_pipeline.py``（8 项）：记忆/摘要/事实抽取链路，
+  含防止早退写法回归的结构性断言。
+- ``tests/test_metrics.py`` / ``tests/test_router.py`` /
+  ``tests/test_storage.py`` 共补 9 项针对上述 Bug 的回归测试。
+- ``tests/test_repo_health.py`` 补 4 项：按官方市场规范校验
+  ``metadata.yaml``（必填字段、``plugin_id`` 约束、URL 可达性、版本一致性、
+  包身份稳定性）。
+
+### 关于「发布到 AstrBot 官方商店」的说明
+
+官方发布入口是 <https://cloud.astrbot.app/publish>，它只支持两种来源：
+
+1. **GitHub 仓库**（通过 GitHub App 授权，读取仓库里的 ``metadata.yaml``）；
+2. **ZIP 压缩包上传**。
+
+按官方文档与市场规范，``repo`` 字段应当是 **GitHub 仓库地址**
+（市场现有 1329 个插件的 ``repo`` 100% 是 ``https://github.com/<owner>/<repo>``）。
+本仓库目前托管在 CNB，``repo`` 指向 CNB（真实可达、被 AstrBot 客户端
+provider-neutral 的解析逻辑支持），**但无法直接用于官方商店提交**。
+
+要上架需要作者提供 GitHub 仓库（例如 ``techjiang/astrbot_plugin_superai``），
+届时把 ``metadata.yaml`` 的 ``repo`` 改指 GitHub 即可，其余字段已就绪。
+这一项已记录在 ``docs/install.md`` 的发布说明中。
+
+## 未发布（文档体系）
+
+只改文档与测试，**无任何运行时行为变更**，无需重载插件之外的额外操作。
+
+### 增强
+
+- **新增 `docs/` 文档体系**（20 篇，按使用者 / 开发者分流）：
+  - 使用者：[安装与升级](docs/install.md)、[快速上手](docs/quickstart.md)、
+    [配置手册](docs/configuration.md)、[指令手册](docs/commands.md)、
+    [模型路由](docs/routing.md)、[记忆与摘要](docs/memory.md)、
+    [工具与工作流](docs/tools-and-workflows.md)、
+    [用量与成本控制](docs/usage-and-budget.md)、[Studio 面板](docs/studio.md)、
+    [常见问题与排错](docs/faq.md)；
+  - 开发者：[架构总览](docs/dev/architecture.md)、
+    [开发与测试](docs/dev/development.md)、
+    [AstrBot 集成契约](docs/dev/astrbot-contracts.md)、
+    [发布流程](docs/dev/release.md)；
+  - 另新增 [发布说明归档](docs/releases/README.md)。
+- **README 重写**：从「长篇能力罗列」改为「定位 → 能力概览 → 快速开始 →
+  文档导航」，把实现细节下沉到 `docs/`，并补充数据与隐私说明。
+- 新增 [CONTRIBUTING.md](CONTRIBUTING.md)（分支/提交/测试/文档要求）
+  与 [SECURITY.md](SECURITY.md)（漏洞报告渠道与既有安全边界）。
+
+### 文档准确性复核
+
+- 逐条对照代码修正 3 处「写得比实现漂亮」的描述：
+  [SECURITY.md](SECURITY.md) 原写「面板不裸插动态值（不用 `innerHTML`）」，
+  实际是「用了 `innerHTML`，但所有插值经过 `esc()` 转义」；
+  [工具与工作流](docs/tools-and-workflows.md) 原来只说「异常被基类兜住」，
+  未说明兜住的形态（记 error 日志 + 把失败文本作为工具结果返回），
+  容易让人误以为异常被静默吞掉；
+  [安装与升级](docs/install.md) 引用了项目里并不存在的环境变量。
+- 每篇文档尾部新增「最后核对」标注，写明核对的版本与对照对象，
+  下次维护时能直接知道该对着什么看。
+
+### 测试
+
+- 新增 `tests/test_docs_consistency.py`（14 项），把文档里的**可验证事实**与代码对齐：
+  - 所有相对链接可解析、文档索引完整、README 有文档入口；
+  - 文档中出现的 `/superai <子指令>` 全部真实注册（正反双向校验）；
+  - 内置帮助文本提到的指令都在指令手册中；
+  - 配置手册覆盖 `_conf_schema.json` 的全部 52 个配置项；
+  - README 版本徽章 / `metadata.yaml` / `superai/version.py` 三方一致；
+  - 文档里的插件目录名、数据目录名、Studio API 路径与代码一致；
+  - FAQ 覆盖「静默失效」类典型故障。
+- 上述 14 项之后又新增 4 项**文档准确性**断言（同一个文件）：
+  - 每篇文档都有「最后核对」标注；
+  - `SECURITY.md` 对面板渲染方式的描述与 `pages/studio/app.js` 实现一致
+    （不得声称「不用 innerHTML」）；
+  - 文档里出现的 `ASTRBOT_*` 环境变量必须在 `conftest.py` / `e2e_smoke.py` /
+    `.cnb.yml` 里真实存在；
+  - 文档对「工具异常怎么处理」的描述与 `SuperAITool.call()` 实现一致。
+
 ## v0.2.3 — 首个正式发布版本（Release）
 
 首个正式 Release 于 2026-09-27 发布（tag `v0.2.3`，产物为 `main` 分支代码）。

@@ -440,8 +440,14 @@ class SuperRouter:
         )
         if len(chain) <= 1:
             return chain
-        healthy = [pid for pid in chain if not self.is_unhealthy(pid)]
-        unhealthy = [pid for pid in chain if self.is_unhealthy(pid)]
+        # 必须把「链上实际存在的候选」作为 available_ids 传进去：
+        # ``is_unhealthy`` 只有在**还存在别的可用 provider** 时才判定不健康，
+        # 否则「所有模型都在报错」会让每个候选都被判为不健康，
+        # 排序退化成原地不动（虽然结果碰巧相同，但语义已经错了）。
+        # 更实际的意义是：单模型部署下不该把唯一可用的模型标记为不健康。
+        available = set(chain)
+        healthy = [pid for pid in chain if not self.is_unhealthy(pid, available_ids=available)]
+        unhealthy = [pid for pid in chain if self.is_unhealthy(pid, available_ids=available)]
         return healthy + unhealthy
 
     def fallback_chain(

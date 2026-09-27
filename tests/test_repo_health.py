@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,3 +174,144 @@ def test_docs_mention_author_links():
         "https://forums.asoe.cn/",
     ):
         assert link in readme, f"README 缺少作者链接：{link}"
+
+
+# ---------------------------------------------------------------------------
+# AstrBot 官方插件市场发布要求
+# ---------------------------------------------------------------------------
+def test_metadata_satisfies_plugin_store_rules():
+    """按 AstrBot 官方市场规范校验 metadata.yaml 的必填字段与约束。
+
+    依据：``docs/zh/dev/plugin-market/2026-06-27.md``（Schema Version 1），
+    以及 ``astrbot/core/star/updater.py`` 的
+    ``PLUGIN_METADATA_REQUIRED_FIELDS = ("name", "desc", "version", "author")``。
+
+    这里用**同一套规则**做本地校验，避免「提交后才发现 CI 拒绝」。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+
+    # 必填字段：非空字符串
+    for field in ("name", "desc", "version", "author"):
+        assert field in metadata, f"metadata.yaml 缺少必填字段 {field}"
+        assert isinstance(metadata[field], str) and metadata[field].strip(), (
+            f"metadata.yaml 的 {field} 必须是非空字符串"
+        )
+
+    # plugin_id = author/name，两者都不得含 "/"
+    for field in ("author", "name"):
+        assert "/" not in metadata[field], f"{field} 不得包含 '/'（否则 plugin_id 非法）"
+
+    # name 必须是合法的 Python 标识符（框架用 importlib 加载）
+    assert metadata["name"].isidentifier(), "name 必须是合法 Python 标识符"
+
+    # 可选字段的类型约束
+    if "tags" in metadata:
+        assert isinstance(metadata["tags"], list) and all(
+            isinstance(item, str) for item in metadata["tags"]
+        ), "tags 必须是字符串数组"
+    if "support_platforms" in metadata:
+        assert isinstance(metadata["support_platforms"], list), "support_platforms 必须是数组"
+    if "social_link" in metadata:
+        assert str(metadata["social_link"]).startswith("https://"), "social_link 必须是 HTTPS URL"
+
+    # repo 必须是可解析的仓库地址（框架用 normalize_repository_url 解析）
+    from urllib.parse import urlparse
+
+    repo = str(metadata["repo"])
+    parsed = urlparse(repo)
+    assert parsed.scheme == "https", "repo 必须是 HTTPS 地址"
+    assert parsed.hostname, "repo 缺少主机名"
+    assert not parsed.query and not parsed.fragment, "repo 不得带 query / fragment"
+
+
+def test_metadata_urls_are_reachable():
+    """``social_link`` / ``repo`` 必须是真实可达的地址（避免发布后 404）。"""
+    import urllib.error
+    import urllib.request
+
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    for key in ("repo", "social_link"):
+        url = metadata.get(key)
+        if not url:
+            continue
+        request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "superai-test"})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
+                assert response.status < 400, f"{key} 返回 {response.status}"
+        except urllib.error.HTTPError as exc:  # pragma: no cover - 网络受限时跳过
+            raise AssertionError(f"{key} 不可达：{url} -> HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError):  # pragma: no cover - 无外网
+            pytest.skip(f"网络不可用，跳过 {key} 可达性检查")
+
+
+def test_version_consistency_across_files():
+    """``metadata.yaml`` / ``superai/version.py`` / README 徽章三处版本必须一致。"""
+    from superai.version import __version__
+
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    assert str(metadata["version"]).lstrip("v") == __version__.lstrip("v"), (
+        "metadata.yaml 与 superai/version.py 版本不一致"
+    )
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"version-v{__version__}" in readme, "README 版本徽章未与 version.py 同步"
+
+
+def test_plugin_market_identity_is_stable():
+    """``author`` 必须是稳定的包身份，不得随展示需求随意改动。
+
+    市场规范把 ``plugin_id`` 定义为 ``metadata.author + "/" + metadata.name``，
+    它是插件在市场里的**全局唯一标识**，也是已安装插件匹配更新的依据。
+    改动它会导致老用户无法收到更新。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    assert metadata["author"] == "cosc"
+    assert metadata["name"] == "astrbot_plugin_superai"
+    assert f"{metadata['author']}/{metadata['name']}" == "cosc/astrbot_plugin_superai"
+
+
+# ---------------------------------------------------------------------------
+# 发布通道契约（v0.2.5 起）
+# ---------------------------------------------------------------------------
+def test_metadata_repo_points_to_github():
+    """``repo`` 必须是 GitHub 仓库地址。
+
+    AstrBot 官方插件市场只接受 GitHub 仓库或 ZIP 包，市场里的插件
+    ``repo`` 全部是 ``github.com/<owner>/<repo>``。指向别处会导致
+    提交被拒，或上架后无法做更新检测。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    repo = str(metadata["repo"])
+    assert repo.startswith("https://github.com/"), f"repo 必须指向 GitHub：{repo}"
+    assert repo.count("/") >= 4, f"repo 应是 https://github.com/<owner>/<repo>：{repo}"
+
+
+def test_metadata_plugin_id_stable():
+    """``author`` 必须是稳定包身份（不是展示名）。
+
+    ``plugin_id = author + "/" + name`` 是市场里的全局唯一标识，
+    也是已安装插件匹配更新的依据 —— 改成展示名会让老用户收不到更新。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    assert metadata["author"] == "cosc", "author 必须是稳定包身份 cosc，不可改为展示名"
+    assert metadata["name"] == "astrbot_plugin_superai"
+
+
+def test_release_scripts_present_and_executable():
+    """发布通道依赖的两个脚本必须存在且可执行。
+
+    它们分别负责「构建可上传官方市场的 ZIP」与「同步 GitHub 发布镜像」，
+    缺失会让发布流程在打 tag 时断掉。
+    """
+    for name in ("sync_github.sh", "build_plugin_zip.sh"):
+        path = ROOT / "scripts" / name
+        assert path.exists(), f"缺少发布脚本 {name}"
+        assert os.access(path, os.X_OK), f"{name} 不可执行（git 会丢失可执行位）"
+
+
+def test_cnb_pipeline_has_tag_release_stage():
+    """``.cnb.yml`` 必须有 tag 触发的发布阶段。"""
+    pipeline = (ROOT / ".cnb.yml").read_text(encoding="utf-8")
+    assert "tag_push" in pipeline, "缺少 tag 触发配置"
+    assert "build_plugin_zip.sh" in pipeline, "tag 流水线未构建插件 ZIP"
+    assert "sync_github.sh" in pipeline, "tag 流水线未同步 GitHub 镜像"

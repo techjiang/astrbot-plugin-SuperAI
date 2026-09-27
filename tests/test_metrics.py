@@ -70,3 +70,53 @@ def test_retention_prunes_old_days(tmp_path):
     collector.flush()
     reloaded = MetricsCollector(tmp_path, retention_days=2)
     assert len(reloaded._days) <= 2
+
+
+# ---------------------------------------------------------------------------
+# 只读路径不得产生副作用
+# ---------------------------------------------------------------------------
+def test_today_stats_does_not_create_empty_bucket(tmp_path):
+    """``today_stats()`` 是只读 API，不得凭空创建当天的桶。
+
+    ``/superai status``、Studio 面板、预算检查都会调用它。早前实现里
+    ``_bucket()`` 无条件 ``self._days[key] = stats``，于是只要用户打开过面板，
+    即使当天一条消息都没有也会多出一个「0 请求」的日期：
+
+    - 它会挤占 ``retention_days`` 的保留名额，把真正的历史数据挤出裁剪窗口；
+    - 它会让「最近 N 天趋势」里出现无意义的 0 值空洞。
+    """
+    from superai.core.metrics import MetricsCollector
+
+    collector = MetricsCollector(tmp_path)
+    collector.today_stats()
+    collector.summary(days=7)
+    assert collector._days == {}, "只读接口不应该往 _days 里写任何东西"
+    assert collector.range_stats(30) == []
+
+
+def test_read_only_queries_do_not_persist_phantom_day(tmp_path):
+    """只读后再正常记录，落盘内容里不应出现空桶。"""
+    import json
+
+    from superai.core.metrics import DailyStats, MetricsCollector
+
+    collector = MetricsCollector(tmp_path)
+    collector._days["2026-09-20"] = DailyStats(date="2026-09-20", requests=5)
+    collector.today_stats()  # 模拟面板 / 状态查询
+    collector.record(input_tokens=3)
+    collector.flush()
+
+    saved = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))["days"]
+    phantom = [date for date, item in saved.items() if item["requests"] == 0]
+    assert not phantom, f"落盘出现幽灵空桶：{phantom}"
+    assert len(collector.range_stats(30)) == 2
+
+
+def test_record_still_creates_bucket(tmp_path):
+    """写入路径必须照旧创建当天的桶（否则统计会丢数据）。"""
+    from superai.core.metrics import MetricsCollector
+
+    collector = MetricsCollector(tmp_path)
+    collector.record(input_tokens=10, output_tokens=5)
+    assert collector.today_stats().requests == 1
+    assert collector.today_stats().total_tokens == 15

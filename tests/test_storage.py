@@ -181,3 +181,50 @@ def test_decay_eventually_removes_stale_memory(tmp_path):
     removed = store.decay(half_life_days=30)
     assert removed == 1
     assert store._all().get("s") == []
+
+
+# ---------------------------------------------------------------------------
+# min_relevance 必须真正生效（曾经是死参数）
+# ---------------------------------------------------------------------------
+def _memory_store(tmp_path):
+    from superai.storage.memory import MemoryStore
+    from superai.storage.store import JsonStore
+
+    return MemoryStore(JsonStore(tmp_path / "long_term.json"))
+
+
+def test_search_min_relevance_filters_unrelated_entries(tmp_path):
+    """``min_relevance > 0`` 时，低于门槛的记忆连兜底都不能返回。
+
+    该参数此前只写在签名与文档里、实现中从未被读取 ——
+    调用方以为过滤生效了，实际拿到的是「权重最高的若干条」。
+    """
+    store = _memory_store(tmp_path)
+    store.add("s", "用户喜欢简洁的回答", kind="preference")
+    store.add("s", "项目叫 SuperAI", kind="fact")
+
+    # 没有门槛：无关查询也走兜底（模型总有背景可参考）
+    fallback = store.search("s", "帮我写一段文案")
+    assert {e.content for e in fallback} == {"用户喜欢简洁的回答", "项目叫 SuperAI"}
+
+    # 有门槛且完全没命中：只回落到 preference 类稳定偏好
+    strict = store.search("s", "帮我写一段文案", min_relevance=0.5)
+    assert [e.content for e in strict] == ["用户喜欢简洁的回答"]
+
+
+def test_search_min_relevance_keeps_relevant_entries(tmp_path):
+    """有门槛时，真正相关的记忆仍必须被返回。"""
+    store = _memory_store(tmp_path)
+    store.add("s", "项目叫 SuperAI", kind="fact")
+    store.add("s", "用户喜欢简洁的回答", kind="preference")
+
+    hits = store.search("s", "SuperAI", min_relevance=0.5)
+    assert [e.content for e in hits] == ["项目叫 SuperAI"]
+
+
+def test_search_without_min_relevance_behaviour_unchanged(tmp_path):
+    """默认（门槛 0）行为与此前保持一致。"""
+    store = _memory_store(tmp_path)
+    store.add("s", "用户喜欢简洁的回答", kind="preference")
+    hits = store.search("s", "简洁")
+    assert [e.content for e in hits] == ["用户喜欢简洁的回答"]
