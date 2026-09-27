@@ -101,6 +101,8 @@ AstrBot 本身已经很好用，但当你真正把它跑在群里，很快就会
 
 ## 安装
 
+> **当前版本**：[v0.2.3（首个正式 Release）](https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI/-/releases) · [更新日志](./CHANGELOG.md)
+
 1. 在 AstrBot WebUI 的「插件市场」搜索 `SuperAI` 安装，或手动克隆到 `data/plugins/`：
 
    ```bash
