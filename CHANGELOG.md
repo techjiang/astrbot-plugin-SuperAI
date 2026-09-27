@@ -2,6 +2,114 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.4
+
+这一版做两件事：**按要求修正 AstrBot 官方商店发布信息**，以及
+**再一次深挖「静默失效」类缺陷** —— 这轮找到了一个比之前所有问题都更隐蔽的
+Bug：它只影响「已经产生过摘要」的会话，而且**永远不会报错、永远不会写日志**。
+
+### 修复（功能性）
+
+- **自动事实抽取对「任何产生过摘要的会话」永久失效**（本轮最严重）。
+  ``_prepare_memory`` 里曾经写成：
+
+  ```python
+  summary = await self.memory_service.maybe_summarize(session, history)
+  if summary:
+      return summary  # ← 这一行是元凶
+  if self._should_extract_facts(session, history):
+      ...  # 后台抽取事实
+  ```
+
+  ``maybe_summarize`` 在**未达到摘要阈值**时会把**已有摘要**原样返回
+  （这是它设计上的行为：调用方需要拿到「当前摘要」）。而摘要一旦生成过
+  就一直非空 —— 于是后面那段在几乎所有轮次里都不可达。
+
+  表现：用户的长期记忆只能靠手动 ``/superai memory add`` 或模型调用
+  ``superai_remember`` 工具来写；「自动抽取偏好与事实」这个主打功能
+  **一次都不会执行**。日志干净、单测全绿、CI 通过，只有把
+  「摘要非空」与「应触发抽取」两个条件放在一起测才能发现。
+
+  现在改为无条件执行抽取判断（是否真的抽取由 ``_should_extract_facts``
+  的节流逻辑决定），并新增结构性断言防止该写法被重新引入。
+
+- **只读统计接口会凭空造出「幽灵日期」，污染趋势与保留窗口**。
+  ``MetricsCollector.today_stats()`` 经由 ``_bucket()`` **无条件**
+  ``self._days[key] = stats``，而它是被 ``/superai status``、Studio 面板与
+  每日预算检查调用的**只读**接口。后果：
+
+  1. 只要用户打开过面板，即使当天一条消息都没有，也会多出一个
+     「0 请求」的日期；
+  2. 它会挤占 ``retention_days`` 的保留名额，把真正的历史数据挤出裁剪窗口；
+  3. 「最近 N 天趋势」里出现无意义的 0 值空洞。
+
+  现在 ``_bucket(create=False)`` 只读返回临时桶（不落盘、不进 ``_days``），
+  写入路径行为不变。
+
+- **``MemoryStore.search()`` 的 ``min_relevance`` 是死参数**。
+  它写在签名里、写在文档里（还附带一大段关于「稳定偏好」的解释），
+  但实现中**从未被读取** —— 调用方以为过滤生效了，实际拿到的是
+  「权重最高的若干条」。现在两条返回路径都会真正应用它：
+  ``> 0`` 时只回落到 ``preference`` 类稳定偏好。
+
+- **``router.ordered_candidates()`` 绕开了「不健康」判定里的一道保护**。
+  ``is_unhealthy()`` 的语义是「连续失败达到阈值，**而且还有别的可用 provider**」
+  （否则所有模型都在报错时会把全部候选都判为不健康，反而失去意义）。
+  ``ordered_candidates`` 调用时没有传 ``available_ids``，等于绕开了这道保护。
+  虽然排序结果碰巧相同，但语义已经错了 —— 单模型部署下唯一可用的模型
+  会被标记为「不健康」。现在把链上实际候选作为 ``available_ids`` 传入。
+
+### 修复（发布信息 / AstrBot 官方商店）
+
+- **``metadata.author`` 改回 ``cosc``**。
+  AstrBot 插件市场规范（Schema Version 1）把 ``plugin_id`` 定义为
+  ``metadata.author + "/" + metadata.name``，且明确要求
+  「``author`` 和 ``name`` 应该是**稳定的包身份值**，而不是展示名」。
+  它是插件在市场里的全局唯一标识，也是已安装插件匹配更新的依据 ——
+  改成展示名「科技酱」会让老用户无法收到更新。
+  「科技酱」作为作者展示信息保留在 README 的「关于作者」章节。
+
+- **补齐市场可选字段**：``tags``（8 个：AI / LLM / 模型路由 / 记忆 / 知识库 /
+  Agent / 工作流 / 用量统计）与 ``social_link``（作者官网）。
+  两者都会进入插件市场的**搜索与分类**索引（见
+  ``dashboard/src/utils/pluginSearch.js``），不填就等于在市场里搜不到。
+
+- **``astrbot_version`` 保持 ``>=4.5.7``**：已用 PEP 440 ``SpecifierSet``
+  校验可被框架解析，且满足当前 AstrBot 4.28.1。
+
+### 工程
+
+- 新增 ``tests/test_framework_lifecycle.py``（21 项）：
+  用**真实 ``PluginManager`` 完整加载插件**（发现入口 → import →
+  读 metadata → 注册工具 → 绑定 self → ``initialize()``），
+  再按框架语义驱动钩子与全部指令。它能拦住「每个局部单测都过、
+  但整体集成后失效」的问题（例如 metadata 版本校验不过、
+  指令注册了但 filter 匹配不到、``initialize()`` 抛异常导致插件被回滚）。
+  缺少真实 AstrBot 源码时整体 skip。
+- 新增 ``tests/test_memory_pipeline.py``（8 项）：记忆/摘要/事实抽取链路，
+  含防止早退写法回归的结构性断言。
+- ``tests/test_metrics.py`` / ``tests/test_router.py`` /
+  ``tests/test_storage.py`` 共补 9 项针对上述 Bug 的回归测试。
+- ``tests/test_repo_health.py`` 补 4 项：按官方市场规范校验
+  ``metadata.yaml``（必填字段、``plugin_id`` 约束、URL 可达性、版本一致性、
+  包身份稳定性）。
+
+### 关于「发布到 AstrBot 官方商店」的说明
+
+官方发布入口是 <https://cloud.astrbot.app/publish>，它只支持两种来源：
+
+1. **GitHub 仓库**（通过 GitHub App 授权，读取仓库里的 ``metadata.yaml``）；
+2. **ZIP 压缩包上传**。
+
+按官方文档与市场规范，``repo`` 字段应当是 **GitHub 仓库地址**
+（市场现有 1329 个插件的 ``repo`` 100% 是 ``https://github.com/<owner>/<repo>``）。
+本仓库目前托管在 CNB，``repo`` 指向 CNB（真实可达、被 AstrBot 客户端
+provider-neutral 的解析逻辑支持），**但无法直接用于官方商店提交**。
+
+要上架需要作者提供 GitHub 仓库（例如 ``techjiang/astrbot_plugin_superai``），
+届时把 ``metadata.yaml`` 的 ``repo`` 改指 GitHub 即可，其余字段已就绪。
+这一项已记录在 ``docs/install.md`` 的发布说明中。
+
 ## 未发布（文档体系）
 
 只改文档与测试，**无任何运行时行为变更**，无需重载插件之外的额外操作。

@@ -94,6 +94,51 @@ git pull
 - [快速上手](./quickstart.md)
 - [配置手册](./configuration.md)
 
+## 发布到 AstrBot 官方插件市场
+
+官方发布入口：<https://cloud.astrbot.app/publish>（需注册 AstrBot Cloud 账号）。
+
+该入口只支持两种来源：
+
+1. **GitHub 仓库** —— 通过 GitHub App 授权，平台直接读取仓库里的
+   `metadata.yaml`；
+2. **ZIP 压缩包上传**。
+
+### 本仓库的现状
+
+本仓库托管在 **CNB**，`metadata.yaml` 的 `repo` 指向 CNB 地址。
+`repo` 是真实可达的（AstrBot 客户端的仓库解析是 provider-neutral 的，
+可以正常 clone 与更新），但**无法直接用于官方商店提交** ——
+按官方文档与
+[插件市场 JSON 规范](https://github.com/AstrBotDevs/AstrBot/blob/master/docs/zh/dev/plugin-market/2026-06-27.md)，
+`repo` 应当是 GitHub 仓库地址（市场现有插件的 `repo` 全部是
+`https://github.com/<owner>/<repo>`）。
+
+### 上架需要做的事
+
+1. 把仓库同步到一个 GitHub 仓库（例如 `techjiang/astrbot_plugin_superai`）；
+2. 把 `metadata.yaml` 的 `repo` 改指该 GitHub 地址；
+3. 在 <https://cloud.astrbot.app/publish> 选择「GitHub」来源并授权，
+   平台会自动解析 `metadata.yaml`。
+
+`metadata.yaml` 的其余发布字段已按要求就绪：
+
+| 字段 | 值 | 说明 |
+| --- | --- | --- |
+| `name` | `astrbot_plugin_superai` | 插件包名，`plugin_id` 的组成部分 |
+| `display_name` | `SuperAI` | 市场展示名 |
+| `short_desc` | 一句话简介 | 市场卡片文案 |
+| `version` | 与 `superai/version.py` 一致 | 更新检测依据 |
+| `author` | `cosc` | **稳定的包身份**，不可改为展示名 |
+| `social_link` | `https://docs.asoe.cn` | 作者主页，进入市场索引 |
+| `tags` | 8 个标签 | 市场搜索与分类依据 |
+| `astrbot_version` | `>=4.5.7` | PEP 440 范围 |
+| `support_platforms` | 9 个平台 | 必须是官方 `ADAPTER_NAME_2_TYPE` 的 key |
+
+> `author` 与 `name` 共同构成 `plugin_id = author/name`，是插件在市场中的
+> **全局唯一标识**，也是已安装插件匹配更新的依据。改动它会导致老用户
+> 无法收到更新 —— `tests/test_repo_health.py` 有断言守住这一点。
+
 ---
 
-**最后核对**：`v0.2.3`（逐条对照 `installation` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.4`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）

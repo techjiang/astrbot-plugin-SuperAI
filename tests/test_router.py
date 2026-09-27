@@ -129,3 +129,57 @@ def test_needs_web_heuristic():
     router = make_router()
     assert router.needs_web("今天有什么新闻")
     assert not router.needs_web("你好呀")
+
+
+# ---------------------------------------------------------------------------
+# 降级链排序：单模型场景不得把唯一可用模型判为「不健康」
+# ---------------------------------------------------------------------------
+def test_single_provider_is_never_treated_as_unhealthy():
+    """只有一个候选时，不该被判定为「不健康」。
+
+    ``is_unhealthy`` 的语义是「连续失败达到阈值，**而且还有别的可用 provider**」
+    （否则所有模型都在报错时会把全部候选都判为不健康，反而失去意义）。
+    ``ordered_candidates`` 早前调用 ``is_unhealthy(pid)`` 时没有传
+    ``available_ids``，等于绕开了这道保护。
+    """
+    config = build_config({"router": {"enabled": True, "strong_provider_id": "only-one"}})
+    router = SuperRouter(config)
+    router.mark_failure("only-one")
+    router.mark_failure("only-one")
+
+    assert router.is_unhealthy("only-one"), "不传 available_ids 时按旧语义仍判不健康"
+    assert not router.is_unhealthy("only-one", available_ids={"only-one"})
+
+    decision = router.decide(prompt="你好")
+    assert router.ordered_candidates(decision, primary="only-one", available_ids={"only-one"}) == [
+        "only-one"
+    ]
+
+
+def test_unhealthy_provider_is_demoted_in_order():
+    """多候选中，连续失败的 provider 应排到后面。"""
+    router = make_router()
+    decision = router.decide(prompt="帮我写代码")
+    assert decision.chain()[0] == "strong-model"
+
+    router.mark_failure("strong-model")
+    router.mark_failure("strong-model")
+    ordered = router.ordered_candidates(
+        decision, primary="strong-model", available_ids={"strong-model", "cheap-model"}
+    )
+    assert ordered[0] == "cheap-model", f"失败模型未被降级：{ordered}"
+    assert set(ordered) == {"strong-model", "cheap-model"}
+
+
+def test_failure_count_expires():
+    """故障记录超过 TTL 后应自动遗忘，不长期拖累排序。"""
+    import time
+
+    router = make_router()
+    router.mark_failure("strong-model")
+    router.mark_failure("strong-model")
+    assert router.failure_count("strong-model") == 2
+
+    # 手动把失败时间推早到 TTL 之前
+    router._last_failure["strong-model"] = time.time() - router.FAILURE_TTL - 1
+    assert router.failure_count("strong-model") == 0

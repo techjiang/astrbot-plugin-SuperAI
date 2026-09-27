@@ -243,6 +243,29 @@ def test_docs_have_review_stamp():
     assert not missing, "以下文档缺少「最后核对」标注：" + ", ".join(missing)
 
 
+def test_review_stamps_reference_current_version():
+    """「最后核对」标注里的版本号必须与当前版本一致。
+
+    否则会出现「文档声称核对到 v0.2.3，实际代码已是 v0.2.4」——
+    这类过期锚点会让人误判文档可信度。
+    """
+    import re
+
+    from superai.version import __version__
+
+    stale: list[str] = []
+    # docs/releases/ 是历史发布说明归档，标注本就停留在当时版本，不参与校验
+    candidates = [path for path in [*DOCS, *TOP_DOCS] if "releases" not in path.parts]
+    for path in candidates:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\*\*最后核对\*\*：`(v?[0-9]+\.[0-9]+\.[0-9]+)`", text):
+            if match.group(1).lstrip("v") != __version__.lstrip("v"):
+                stale.append(f"{path.relative_to(ROOT)} -> {match.group(1)}")
+    assert not stale, f"以下文档的「最后核对」版本停留在旧版本（当前 {__version__}）：" + ", ".join(
+        stale
+    )
+
+
 def test_security_doc_matches_studio_escaping_implementation():
     """SECURITY.md 对面板渲染方式的描述必须与 app.js 实现一致。
 

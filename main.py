@@ -650,16 +650,20 @@ class SuperAIPlugin(Star):
                 return self.summaries.get(session).summary
 
             summary = await self.memory_service.maybe_summarize(session, history)
-            if summary:
-                return summary
 
             # 事实抽取要额外调一次模型，必须节流：否则每轮对话都会烧一次钱。
+            #
+            # 注意：这里**不能**写成 ``if summary: return summary``。
+            # ``maybe_summarize`` 在「未达到摘要阈值」时会把**已有摘要**原样返回，
+            # 而摘要一旦生成过就一直是非空的 —— 于是下面这段在几乎所有轮次里
+            # 都不可达，「自动抽取事实」这个主打功能对任何产生过摘要的会话
+            # **永远不会执行**，且没有任何日志或异常提示。
             if self._should_extract_facts(session, history):
                 self._spawn(
                     self.memory_service.extract_facts(session, "\n".join(history[-10:])),
                     name="fact-extract",
                 )
-            return self.summaries.get(session).summary
+            return summary
         except Exception as exc:  # noqa: BLE001 - 记忆处理失败不应影响对话
             logger.debug(f"[SuperAI] 会话记忆处理失败：{exc}")
             return self.summaries.get(session).summary

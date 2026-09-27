@@ -81,6 +81,11 @@ ALLOWED_KINDS = frozenset({"fact", "preference", "event"})
 MIN_MEMORY_CHARS = 4
 
 
+def _preference_order(entry: MemoryEntry) -> tuple[bool, float, int]:
+    """兜底排序键：稳定偏好优先，其次权重、再次新鲜度。"""
+    return (entry.kind == "preference", entry.weight, entry.updated_at)
+
+
 #: 英文 / 数字词的最小长度，更短的（如 "a"）不参与关键词打分
 _MIN_TOKEN_LEN = 2
 
@@ -215,15 +220,20 @@ class MemoryStore:
         背景信息，长期记忆等于白存。
 
         参数:
-            min_relevance: 相关性门槛。低于它的记忆**连兜底都不会返回**。
-                用于「稳定偏好」这类永远应该带上、但从不命中查询的记忆：
-                它们通常通过 ``kind`` 而不是关键词命中，所以需要一个独立的
-                通道把它们捞出来，而不是靠 n-gram 碰运气。
+            min_relevance: 相关性门槛（默认 0，表示不过滤）。
+                - ``0``：相关性为 0 的记忆仍会走兜底，保证模型总有背景可参考；
+                - ``> 0``：低于门槛的记忆**连兜底都不会返回**，此时只回落到
+                  ``preference`` 类的稳定偏好。用于「只要稳定的那几条」的场景。
+
+                *（历史遗留说明：该参数此前只写在签名与文档里，实现中从未被
+                读取，属于典型的「死参数」——调用方以为过滤生效了，实际没有。
+                现在两条返回路径都会真正应用它。）*
         """
         entries = self._entries(session)
         if not entries:
             return []
         limit = max(1, min(int(top_k or 5), 50))
+        threshold = max(0.0, float(min_relevance or 0.0))
 
         query_norm = normalize_space(query).lower()
         if not query_norm:
@@ -253,20 +263,27 @@ class MemoryStore:
             score *= 1.0 + min(entry.weight, 5.0) * 0.1
             scored.append((score, entry))
 
+        if threshold > 0:
+            # 显式门槛：低于门槛的记忆**连兜底都不会返回**。
+            # 这是为「稳定偏好」准备的独立通道 —— 它们天然与具体提问不相关，
+            # 只能靠 kind 而不是关键词命中，调用方需要显式声明「只要稳定的那几条」。
+            scored = [pair for pair in scored if pair[0] >= threshold]
+            if not scored:
+                return [
+                    entry
+                    for entry in sorted(entries, key=_preference_order, reverse=True)
+                    if entry.kind == "preference"
+                ][:limit]
+
         if not scored:
             # 没有任何相关性：回落到「权重最高」的记忆，保证模型仍拿得到背景。
             # 但这里必须把 preference 类的稳定偏好排在前面：它们与具体提问
             # 天然不相关，如果只按 weight 排，一条临时事实很容易把
             # 「用户喜欢简洁的回答」挤出去。
-            ranked = sorted(
-                entries,
-                key=lambda item: (item.kind == "preference", item.weight, item.updated_at),
-                reverse=True,
-            )
+            ranked = sorted(entries, key=_preference_order, reverse=True)
             return ranked[:limit]
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        limit = max(1, min(int(top_k or 5), 50))
         selected = [entry for _, entry in scored[:limit]]
 
         # 命中即加权，让「常用记忆」更稳

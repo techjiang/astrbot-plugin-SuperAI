@@ -220,12 +220,26 @@ class MetricsCollector:
     def today() -> str:
         return time.strftime("%Y-%m-%d", time.localtime())
 
-    def _bucket(self, date: str | None = None) -> DailyStats:
+    def _bucket(self, date: str | None = None, *, create: bool = True) -> DailyStats:
+        """取某个日期（默认今天）的聚合桶。
+
+        参数:
+            create: 为 ``True`` 时不存在就新建（写入路径）；
+                为 ``False`` 时只读，不存在的日期返回一个临时的空桶、
+                **不会**写进 ``self._days``。
+
+        「只读也要新建桶」看起来无害，实际会污染统计：
+        ``/superai status``、Studio 面板、预算检查都会调用 ``today_stats()``，
+        只要用户打开过面板，即使当天一条消息都没有，也会凭空多出一个
+        「0 请求」的日期。它会挤占 ``retention_days`` 的保留名额、把真正的
+        历史数据挤出裁剪窗口，并让「最近 N 天趋势」里出现无意义的 0 值空洞。
+        """
         key = date or self.today()
         stats = self._days.get(key)
         if stats is None:
             stats = DailyStats(date=key)
-            self._days[key] = stats
+            if create:
+                self._days[key] = stats
         return stats
 
     def record(
@@ -292,7 +306,8 @@ class MetricsCollector:
 
     # -- 查询 -------------------------------------------------------------
     def today_stats(self) -> DailyStats:
-        return self._bucket()
+        """今日统计（只读，不会凭空创建当天的桶）。"""
+        return self._bucket(create=False)
 
     def range_stats(self, days: int = 7) -> list[DailyStats]:
         """返回最近 N 天的统计（含今天），按日期升序。"""

@@ -20,4 +20,4 @@
 
 ---
 
-**最后核对**：`v0.2.3`（发布说明与 `CHANGELOG.md` / `metadata.yaml` 版本号一致）
+**最后核对**：`v0.2.4`（发布说明与 `CHANGELOG.md` / `metadata.yaml` 版本号一致）
