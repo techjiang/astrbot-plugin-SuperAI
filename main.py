@@ -59,7 +59,12 @@ from astrbot.api.web import error_response, json_response, request
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from superai.agent_runner import AgentExecutor
-from superai.assets import format_logo_report, inspect_logo
+from superai.assets import (
+    format_logo_report,
+    format_logo_token_report,
+    inspect_logo,
+    probe_logo_token_service,
+)
 from superai.core.config import _as_bool, _as_float, _as_int, build_config
 from superai.core.errors import ProviderUnavailableError, SuperAIError
 from superai.core.metrics import MetricsCollector
@@ -219,11 +224,22 @@ class SuperAIPlugin(Star):
             level, message = format_logo_report(inspect_logo())
         except Exception as exc:  # noqa: BLE001 - 自检失败不影响插件功能
             logger.debug(f"[SuperAI] 图标自检未能完成：{exc}")
-            return
-        if level == "warning":
-            logger.warning(message)
         else:
-            logger.info(message)
+            if level == "warning":
+                logger.warning(message)
+            else:
+                logger.info(message)
+
+        # 图标文件本身没问题，却「刷新后变成默认星形」——这是框架侧的一次性令牌
+        # 问题（file_token_service.handle_file 用 pop 消费令牌，见 assets.py 说明）。
+        # 插件改不了框架渲染的列表卡片，但至少能让日志一眼指向根因。
+        try:
+            token_report = format_logo_token_report(probe_logo_token_service())
+        except Exception as exc:  # noqa: BLE001 - 探测失败不影响插件功能
+            logger.debug(f"[SuperAI] 图标令牌探测未能完成：{exc}")
+            return
+        if token_report is not None:
+            logger.warning(token_report[1])
 
     async def terminate(self) -> None:
         """插件卸载 / 停用时清理资源。"""

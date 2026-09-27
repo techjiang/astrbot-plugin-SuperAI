@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import struct
 from pathlib import Path
 
@@ -207,6 +208,109 @@ def inspect_logo(plugin_dir: Path | None = None) -> dict[str, object]:
 
     report["ok"] = not problems
     return report
+
+
+#: AstrBot 框架里「插件图标只能用一次」的问题说明。
+#: 框架用 ``file_token_service.register_file(logo, timeout=300)`` 签发图标 URL，
+#: 而 ``handle_file()`` 内部是 ``staged_files.pop(token)`` —— 取一次即失效。
+#: 前端会缓存 ImageList 里的 URL，刷新 / 换设备 / 缓存过期后重新请求就拿到 404，
+#: ``ExtensionCard.vue`` 的 ``@error`` 会把图标永久换成默认星形。
+FRAMEWORK_LOGO_TOKEN_HINT = (
+    "这是 AstrBot 框架侧的问题，不是插件配置问题："
+    "插件图标 URL 走的是「一次性令牌」（file_token_service.handle_file 用 pop 消费），"
+    "浏览器第一次请求能拿到图，刷新 / 换设备 / 令牌 5 分钟过期后就是 404，"
+    "前端于是回落到默认星形图标。"
+)
+
+
+def _run_probe_in_thread(probe) -> bool:
+    """在独立线程里跑探测协程（当前线程已有事件循环时使用）。"""
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return bool(pool.submit(lambda: asyncio.run(probe())).result(timeout=10))
+
+
+def _has_running_loop() -> bool:
+    """当前是否已经在一个运行中的事件循环里（决定能不能用 ``asyncio.run``）。"""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def probe_logo_token_service() -> dict[str, object]:
+    """探测框架的图标令牌是否「取一次即失效」（只读，不启动服务器）。
+
+    做法：直接拿框架自己的 ``file_token_service`` 注册一份临时文件，
+    连着取两次。第二次拿不到 → 命中该问题。
+
+    返回 ``{"available": bool, "single_use": bool, "detail": str}``；
+    框架不在位（例如纯单元测试环境）时 ``available=False``，不算问题。
+    """
+    import tempfile
+
+    try:
+        from astrbot.core import file_token_service
+    except Exception:
+        return {"available": False, "single_use": False, "detail": "框架未安装"}
+
+    async def _probe() -> bool:
+        register = file_token_service.register_file
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as handle:
+            handle.write(_PNG_SIGNATURE + b"probe")
+            handle.flush()
+            # 复刻 plugin_service.get_plugin_logo_token 的调用方式。
+            # 不靠 inspect 判断签名 —— 支持 **kwargs 的框架/替身会看不出来，
+            # 直接按「能不能真的重复读」来判断行为。
+            try:
+                token = await register(handle.name, timeout=30, reusable=True)
+            except TypeError:
+                # 老框架压根不接受 reusable → 图标必然是一次性令牌
+                return True
+            for _ in range(2):
+                try:
+                    await file_token_service.handle_file(token)
+                except KeyError:
+                    return True  # 接受了 reusable 却仍取不到第二次 → 修复没生效
+        return False
+
+    if not _has_running_loop():
+        try:
+            single_use = asyncio.run(_probe())
+        except Exception as exc:  # pragma: no cover - 探测失败不应影响启动
+            return {"available": True, "single_use": False, "detail": f"探测失败：{exc}"}
+    else:
+        # 已经身处事件循环（插件初始化在异步上下文里跑），不能 asyncio.run
+        # （会抛 RuntimeError 并留下未 await 的协程）。改在**独立线程**里
+        # 起一个临时 loop，探测逻辑本身不碰插件状态，跨线程是安全的。
+        try:
+            single_use = _run_probe_in_thread(_probe)
+        except Exception as exc:  # pragma: no cover - 探测失败不应影响启动
+            return {"available": True, "single_use": False, "detail": f"探测失败：{exc}"}
+
+    return {
+        "available": True,
+        "single_use": single_use,
+        "detail": FRAMEWORK_LOGO_TOKEN_HINT if single_use else "图标令牌可重复读取",
+    }
+
+
+def format_logo_token_report(probe: dict[str, object]) -> tuple[str, str] | None:
+    """把令牌探测结果转成日志；没命中问题（或框架不在位）时返回 ``None``。"""
+    if not probe.get("available") or not probe.get("single_use"):
+        return None
+    return (
+        "warning",
+        "[SuperAI] 检测到框架图标令牌「一次性」问题（插件功能不受影响）：\n"
+        "  症状：刚装完第一次打开图标正常，刷新页面 / 重新进入 / 换设备后变成默认星形图标\n"
+        f"  原因：{FRAMEWORK_LOGO_TOKEN_HINT}\n"
+        "  修复：升级 AstrBot 到已修复该问题的版本（file_token_service 支持 reusable 令牌）；\n"
+        "        或临时用 Studio 面板查看状态 —— 面板图标走静态路由，不受影响。",
+    )
 
 
 def format_logo_report(report: dict[str, object]) -> tuple[str, str]:
