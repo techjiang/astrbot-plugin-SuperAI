@@ -1,0 +1,56 @@
+# SuperAI 流水线：代码风格检查 + 单元测试 + 真实 AstrBot 端到端联调
+#
+# AstrBot 本体要求 Python >= 3.12，因此 CI 镜像基于 python:3.12-slim 构建。
+# 插件运行依赖（requirements.txt，如 aiohttp）由 AstrBot 内置，
+# 但测试环境没有 AstrBot，因此 CI 需显式安装运行依赖 + 测试依赖。
+#
+# 镜像内预装 git 与插件依赖，避免每个 Stage 重复 apt-get install / pip install
+# （既慢又可能因网络抖动失败）。
+
+.docker-config: &docker-config
+  # 用 Dockerfile 构建临时镜像：docker.build 的子字段只有
+  # dockerfile / target / by / versionBy / buildArgs / ignoreBuildArgsInVersion，
+  # 不支持 context（构建上下文固定为仓库根目录）。
+  # 写成 docker.image.dockerfile 会在 Prepare 阶段直接失败：
+  #   docker pull failed: image: [object Object] is not allow.
+  build:
+    dockerfile: .ci/Dockerfile
+    # 声明构建缓存依赖：这两个文件变化才需要重新执行 pip install 层
+    by:
+      - requirements.txt
+      - requirements-dev.txt
+
+.stages: &stages
+  stages:
+    - name: 安装依赖
+      script:
+        - pip install --no-cache-dir -r requirements.txt
+        - pip install --no-cache-dir -r requirements-dev.txt
+    - name: 代码风格检查
+      script:
+        - ruff check .
+        - ruff format --check .
+    - name: 单元测试
+      script:
+        - python -m pytest tests
+    - name: 真实 AstrBot 端到端联调
+      script: |
+        # 拉取真实 AstrBot，验证「入口可发现 / 钩子被正确绑定 / 路由生效」
+        # 这一步专门守住「测试绿但线上死」的陷阱（单元测试用的是替身）
+        git clone --depth 1 https://github.com/AstrBotDevs/AstrBot /tmp/astrbot-ref
+        # 插件 import 的是 astrbot 本体模块（astrbot.api / astrbot.core.*），
+        # 仅把源码目录加进 sys.path 不够——本体的第三方依赖也必须在位，
+        # 否则 import 阶段就会因缺包（如 deprecated）中断。
+        pip install --no-cache-dir -r /tmp/astrbot-ref/requirements.txt
+        ASTRBOT_REF=/tmp/astrbot-ref python scripts/e2e_smoke.py
+
+main:
+  push:
+    - name: lint-and-test
+      docker: *docker-config
+      <<: *stages
+
+  pull_request:
+    - name: lint-and-test
+      docker: *docker-config
+      <<: *stages

@@ -1,0 +1,9 @@
+# 开发 / CI 依赖（运行依赖见 requirements.txt）
+ruff>=0.6.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+typing_extensions>=4.10.0
+# tests/test_repo_health.py 需要解析 metadata.yaml / _conf_schema.json 一致性
+pyyaml>=6.0.0
+# tests/test_repo_health.py 校验 Logo 的透明通道（无背景）
+Pillow>=10.0.0

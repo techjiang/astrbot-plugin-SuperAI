@@ -1,0 +1,66 @@
+{
+  "metadata": {
+    "display_name": "SuperAI",
+    "short_desc": "Next-gen AI enhancer for AstrBot: model routing, memory, agents.",
+    "desc": "SuperAI is an AI enhancement layer for AstrBot, bundling model routing with automatic failover, rolling summaries and long-term memory, web augmentation, knowledge-base QA, quick AI commands, workflow orchestration, and usage/cost control."
+  },
+  "config": {
+    "enabled": {
+      "description": "Enable SuperAI"
+    },
+    "enabled_tasks": {
+      "description": "Task types to enhance"
+    },
+    "debug": {
+      "description": "Debug logging"
+    },
+    "router": {
+      "description": "Model routing (SuperRouter)"
+    },
+    "memory": {
+      "description": "Memory & summary (SuperMemory)"
+    },
+    "web": {
+      "description": "Web search"
+    },
+    "knowledge_base": {
+      "description": "Knowledge base"
+    },
+    "agent": {
+      "description": "Agent settings"
+    },
+    "commands": {
+      "description": "Command behaviour"
+    },
+    "metrics": {
+      "description": "Usage & quota"
+    },
+    "workflow": {
+      "description": "Workflows"
+    }
+  },
+  "pages": {
+    "studio": {
+      "title": "SuperAI Studio",
+      "description": "Inspect status, routing tiers, registered tools and usage stats.",
+      "heading": "SuperAI Studio",
+      "refresh": "Refresh",
+      "status": "Status",
+      "tools": "Registered tools",
+      "stats": "Usage",
+      "memory": "Memory lookup",
+      "session": "Session UMO",
+      "search": "Search",
+      "clear": "Clear memory",
+      "requests": "Requests",
+      "tokens": "Tokens",
+      "latency": "Avg latency",
+      "providers": "Providers",
+      "routes": "Routes",
+      "health": "Provider health",
+      "sessions": "Sessions",
+      "workflows": "Workflows",
+      "noData": "No data"
+    }
+  }
+}

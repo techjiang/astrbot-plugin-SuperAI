@@ -1,0 +1,33 @@
+# SuperAI 代码风格配置（与 AstrBot 官方建议保持一致）
+target-version = "py310"
+line-length = 100
+
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "tests/stubs",
+]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # 行长由 formatter 处理
+    "B008",  # 允许在参数默认值中调用函数（AstrBot 的 filter 惯用法）
+    "SIM108",# 允许 if/else 三元以外的写法
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["B011", "SIM117"]
+# 根入口必须在 import 之前把插件目录插入 sys.path，否则 ``superai.*`` 不可导入
+"main.py" = ["E402"]
+"superai/main.py" = ["E402"]
