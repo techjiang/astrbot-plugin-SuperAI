@@ -2,6 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 未发布（文档体系）
+
+只改文档与测试，**无任何运行时行为变更**，无需重载插件之外的额外操作。
+
+### 增强
+
+- **新增 `docs/` 文档体系**（20 篇，按使用者 / 开发者分流）：
+  - 使用者：[安装与升级](docs/install.md)、[快速上手](docs/quickstart.md)、
+    [配置手册](docs/configuration.md)、[指令手册](docs/commands.md)、
+    [模型路由](docs/routing.md)、[记忆与摘要](docs/memory.md)、
+    [工具与工作流](docs/tools-and-workflows.md)、
+    [用量与成本控制](docs/usage-and-budget.md)、[Studio 面板](docs/studio.md)、
+    [常见问题与排错](docs/faq.md)；
+  - 开发者：[架构总览](docs/dev/architecture.md)、
+    [开发与测试](docs/dev/development.md)、
+    [AstrBot 集成契约](docs/dev/astrbot-contracts.md)、
+    [发布流程](docs/dev/release.md)；
+  - 另新增 [发布说明归档](docs/releases/README.md)。
+- **README 重写**：从「长篇能力罗列」改为「定位 → 能力概览 → 快速开始 →
+  文档导航」，把实现细节下沉到 `docs/`，并补充数据与隐私说明。
+- 新增 [CONTRIBUTING.md](CONTRIBUTING.md)（分支/提交/测试/文档要求）
+  与 [SECURITY.md](SECURITY.md)（漏洞报告渠道与既有安全边界）。
+
+### 测试
+
+- 新增 `tests/test_docs_consistency.py`（14 项），把文档里的**可验证事实**与代码对齐：
+  - 所有相对链接可解析、文档索引完整、README 有文档入口；
+  - 文档中出现的 `/superai <子指令>` 全部真实注册（正反双向校验）；
+  - 内置帮助文本提到的指令都在指令手册中；
+  - 配置手册覆盖 `_conf_schema.json` 的全部 52 个配置项；
+  - README 版本徽章 / `metadata.yaml` / `superai/version.py` 三方一致；
+  - 文档里的插件目录名、数据目录名、Studio API 路径与代码一致；
+  - FAQ 覆盖「静默失效」类典型故障。
+
 ## v0.2.3 — 首个正式发布版本（Release）
 
 首个正式 Release 于 2026-09-27 发布（tag `v0.2.3`，产物为 `main` 分支代码）。
