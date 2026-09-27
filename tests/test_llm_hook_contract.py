@@ -23,7 +23,9 @@ from pathlib import Path
 
 import pytest
 
-from superai.main import SuperAIPlugin
+from conftest import load_superai_entry
+
+SuperAIPlugin = load_superai_entry().SuperAIPlugin
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,7 +55,7 @@ def test_on_llm_request_never_yields_in_source():
     """
     import ast
 
-    tree = ast.parse((ROOT / "superai" / "main.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
     target = None
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "on_llm_request":

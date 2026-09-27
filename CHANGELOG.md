@@ -2,6 +2,50 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.2
+
+这一版是**在真实 AstrBot 4.28.1 上跑端到端联调时挖出来的**：v0.2.1 里
+插件「日志显示加载成功、CI 全绿」，但实际上**从来没有被框架加载过**。
+
+### 修复（致命）
+
+- **插件入口不在框架认的位置，整个插件被静默跳过**。
+  AstrBot 的 `PluginManager._get_modules` 只认插件目录下的 `main.py`
+  或「与目录同名的 `<dirname>.py`」；本插件实现主体在 `superai/` 包里，
+  根目录没有入口，于是框架只留一行
+  `Plugin astrbot_plugin_superai has neither main.py nor astrbot_plugin_superai.py; skipping it.`
+  就把插件跳过了 —— 用户看到的是「插件装上了，但一点效果都没有」。
+  现在根目录补上 `main.py` 作为入口。
+- **插件类定义在子模块，导致 `self` 绑定失败、钩子被静默吞掉**。
+  框架用 `metadata.module_path`（入口模块路径）调
+  `get_handlers_by_module_name()` 找到处理器后，才会执行
+  `handler.handler = functools.partial(raw_handler, metadata.star_cls)` 绑定 `self`；
+  而处理器的 `handler_module_path` 记录的是**装饰器所在模块**。
+  插件类原先定义在 `superai/main.py`，与入口模块路径不一致 → 绑定不发生 →
+  调用时抛 `TypeError: SuperAIPlugin.on_llm_request() missing 1 required
+  positional argument: 'req'`，异常被 `call_event_hook()` 吞掉只记一行 error，
+  结果是**路由 / 记忆注入 / 图片保护 / 预算拦截全部静默失效**。
+  现在插件类与两个 `@filter` 钩子都定义在根 `main.py`，
+  `superai/` 包只保留不依赖插件实例的纯逻辑（配置 / 路由 / 存储 / 工具 / 提示词）。
+
+### 新增
+
+- `tests/test_plugin_loader_contract.py`：11 项「加载器契约」测试，固定住
+  「入口必须存在」「插件类必须定义在入口模块」「钩子签名必须是
+  `(self, event, payload)`」「入口不能有相对导入」等不变量。
+- `scripts/e2e_smoke.py`：在**真实 AstrBot** 上按框架的方式加载插件、
+  注册处理器、绑定 `self`、`await` 钩子，并断言路由确实改写了请求。
+  已接入 CI，专门守住「测试绿、线上死」。
+- README 新增「入口为什么必须在根目录」一节，把上述两条硬约束写清楚。
+
+### 验证
+
+- 真实 AstrBot 4.28.1 端到端：WebChat 发消息 → 路由命中 `cheap` 档 →
+  mock provider 返回 → 用量落盘（`requests=4`, `total_tokens=6370`,
+  `route=cheap`, `failures=0`），Studio 面板全部区块正常渲染。
+- `pytest tests` → **132 passed**；`ruff check` + `ruff format --check` 全通过。
+- `scripts/e2e_smoke.py` → 全部通过。
+
 ## v0.2.1
 
 这一版修的是**最要命的一类问题：插件看着装上了，实际什么都没做**。

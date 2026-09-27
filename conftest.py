@@ -46,3 +46,28 @@ def pytest_configure(config) -> None:  # noqa: ANN001 - pytest 钩子
                 sys.path.insert(0, path)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+
+
+def load_superai_entry():
+    """按 AstrBot 的方式加载插件入口模块。
+
+    AstrBot 用 ``__import__("data.plugins.astrbot_plugin_superai.main", ...)``
+    加载插件，因此插件类与 ``@filter`` 钩子都定义在仓库根目录的 ``main.py``
+    （详见该文件的说明）。测试也走同一入口，避免「测试绿、线上死」。
+    """
+    import importlib.util
+
+    entry = ROOT / "main.py"
+    name = "superai_entry_main"
+    if name in sys.modules:
+        return sys.modules[name]
+
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+    spec = importlib.util.spec_from_file_location(name, entry)
+    assert spec is not None and spec.loader is not None, f"无法加载 {entry}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module

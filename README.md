@@ -168,8 +168,9 @@ SuperAI 会自动：判断档位 → 选模型 → 拉取相关记忆 → 带上
 ## 架构
 
 ```
+main.py                  # 插件入口：插件类、@filter 钩子、指令、Web API
+                         #   —— 必须放这里，见下面「入口为什么必须在根目录」
 superai/
-├── main.py              # 插件入口：钩子、指令、Web API
 ├── agent_runner.py      # 带降级/超时重试的 Agent 执行器
 ├── prompt.py            # 提示词构建（稳定/动态分离）
 ├── memory_service.py    # 摘要生成与事实抽取
@@ -180,10 +181,34 @@ superai/
 │   └── errors.py        # 统一异常
 ├── router/router.py     # SuperRouter 路由与降级
 ├── storage/             # JSON 持久化（记忆 / 摘要 / 工作流）
-└── tools/               # function calling 工具集
+├── tools/               # function calling 工具集
+└── main.py              # 兼容垫片（旧导入路径 re-export 根 main.py）
 ```
 
 数据落在 `data/plugin_data/astrbot_plugin_superai/`（遵循官方「持久化数据放 data 目录」原则）。
+
+### 入口为什么必须在根目录
+
+AstrBot 的 `PluginManager` 有两条会让插件**静默失效**的硬约束，实现时都踩过：
+
+1. **只认 `main.py` 或「与目录同名的 `<dirname>.py`」**。入口放在子目录
+   （如 `superai/main.py`）时，日志只留一行
+   `Plugin astrbot_plugin_superai has neither main.py nor astrbot_plugin_superai.py; skipping it.`，
+   插件被跳过 —— 表面「装上了」，实际一个钩子都没注册。
+2. **插件类与 `@filter` 钩子必须定义在入口模块里**。框架用
+   `metadata.module_path`（入口模块路径）调
+   `get_handlers_by_module_name()` 找处理器，命中后才执行
+   `handler.handler = functools.partial(raw_handler, metadata.star_cls)`
+   来绑定 `self`。而处理器的 `handler_module_path` 记录的是**装饰器所在模块**。
+   若插件类定义在子模块、入口只是转口，两者永不相等 → 绑定不发生 →
+   调用时抛 `TypeError: SuperAIPlugin.on_llm_request() missing 1 required
+   positional argument: 'req'`，且异常被 `call_event_hook()` 吞掉只记一行 error，
+   于是**路由 / 记忆注入 / 图片保护 / 预算拦截全部静默失效**。
+
+所以：**插件类与钩子放根 `main.py`**，`superai/` 包只放不依赖插件实例的纯逻辑。
+`tests/test_plugin_loader_contract.py` 把这组不变量用测试固定住；
+`scripts/e2e_smoke.py` 在真实 AstrBot 上按框架的方式加载与调用钩子，
+专门守住「测试绿、线上死」这类陷阱（已接入 CI）。
 
 ## 开发
 

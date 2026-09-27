@@ -238,7 +238,9 @@ class FakeContext:
 
 def _make_plugin(tmp_path, monkeypatch, *, history=None, pages=1, **overrides):
     """构造一个使用临时数据目录的插件实例。"""
-    import superai.main as main_mod
+    from conftest import load_superai_entry
+
+    main_mod = load_superai_entry()
 
     monkeypatch.setattr(main_mod, "get_astrbot_data_path", lambda: str(tmp_path), raising=True)
 
@@ -289,7 +291,9 @@ def test_plugin_instantiates_and_registers_tools(tmp_path, monkeypatch):
 
 
 def test_plugin_registers_web_apis(tmp_path, monkeypatch):
-    from superai.main import PLUGIN_NAME
+    from conftest import load_superai_entry
+
+    PLUGIN_NAME = load_superai_entry().PLUGIN_NAME
 
     plugin, context = _make_plugin(tmp_path, monkeypatch)
     routes = list(context.registered_web_apis)

@@ -22,6 +22,12 @@ main:
         - name: 单元测试
           script:
             - python -m pytest tests
+        - name: 真实 AstrBot 端到端联调
+          script: |
+            # 拉取真实 AstrBot，验证「入口可发现 / 钩子被正确绑定 / 路由生效」
+            # 这一步专门守住「测试绿但线上死」的陷阱（单元测试用的是替身）
+            git clone --depth 1 https://github.com/AstrBotDevs/AstrBot /tmp/astrbot-ref
+            ASTRBOT_REF=/tmp/astrbot-ref python scripts/e2e_smoke.py
 
   pull_request:
     - name: lint-and-test
@@ -40,3 +46,7 @@ main:
         - name: 单元测试
           script:
             - python -m pytest tests
+        - name: 真实 AstrBot 端到端联调
+          script: |
+            git clone --depth 1 https://github.com/AstrBotDevs/AstrBot /tmp/astrbot-ref
+            ASTRBOT_REF=/tmp/astrbot-ref python scripts/e2e_smoke.py
