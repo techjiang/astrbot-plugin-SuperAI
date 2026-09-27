@@ -32,7 +32,7 @@ from astrbot.api import logger
 
 from ..core.config import SuperAIConfig
 from ..core.errors import ProviderUnavailableError, RouteNotFoundError
-from ..core.utils import estimate_tokens, format_ts
+from ..core.utils import as_int, estimate_tokens, format_ts
 
 #: 路由档位常量
 TIER_CHEAP = "cheap"
@@ -306,7 +306,7 @@ class SuperRouter:
         if has_image:
             return self._build(TIER_VISION, "包含图片，选择视觉模型")
 
-        long_ctx_tokens = int(self.config.router.get("long_context_tokens") or 64000)
+        long_ctx_tokens = as_int(self.config.router.get("long_context_tokens"), 64000)
         if context_tokens and context_tokens >= long_ctx_tokens:
             return self._build(
                 TIER_LONG_CONTEXT,

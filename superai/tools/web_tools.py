@@ -18,6 +18,7 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
+from ..core.utils import as_float, as_int
 from .base import SuperAITool, extract_tool_context
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -88,12 +89,11 @@ class WebSearchTool(SuperAITool):
             return "缺少搜索关键词。"
 
         cfg = tool_ctx.config.web
-        try:
-            max_results = int(kwargs.get("max_results") or cfg.get("max_results") or 5)
-        except (TypeError, ValueError):
-            max_results = 5
+        max_results = as_int(kwargs.get("max_results"), as_int(cfg.get("max_results"), 5))
         max_results = max(1, min(10, max_results))
-        timeout = float(cfg.get("timeout") or 15)
+        # 超时同样要走容错解析：WebUI 里该字段是文本框，用户填 "30s" / "abc"
+        # 都会进来，直接 float() 会抛 ValueError 并把整轮工具调用打断。
+        timeout = max(1.0, as_float(cfg.get("timeout"), 15.0))
         engine = str(cfg.get("engine") or "duckduckgo")
 
         try:
@@ -106,6 +106,17 @@ class WebSearchTool(SuperAITool):
             return f"搜索失败：{exc}"
         except TimeoutError:
             return "搜索超时，请稍后再试。"
+        except ValueError as exc:
+            # 配置类错误（如选了 searxng 却没填地址）此前会直接抛出：
+            # 工具异常会被框架的 ``FunctionToolExecutor`` 包装成 Exception
+            # 向上冒泡，整轮对话因此中断，用户只看到报错而不知道是配置问题。
+            logger.warning(f"[SuperAI] 搜索配置有误：{exc}")
+            return f"搜索无法进行：{exc}"
+        except Exception as exc:  # noqa: BLE001 - 任何解析异常都应降级为文本提示
+            # 上游返回非 JSON（SearXNG 被反代拦截、返回 HTML 错误页）时
+            # ``response.json()`` 会抛 JSONDecodeError，同样不能让工具崩溃。
+            logger.warning(f"[SuperAI] 搜索失败：{exc}")
+            return f"搜索失败：{exc}"
 
         if not items:
             return f"没有找到与「{query}」相关的结果。"
@@ -170,7 +181,13 @@ class WebSearchTool(SuperAITool):
                     status=response.status,
                     message="SearXNG 返回异常状态码",
                 )
-            payload = await response.json(content_type=None)
+            try:
+                payload = await response.json(content_type=None)
+            except (ValueError, aiohttp.ContentTypeError) as exc:
+                # SearXNG 被反代 / 网关拦截时会返回 HTML 或纯文本错误页，
+                # ``json()`` 于是抛 JSONDecodeError。包装成带明确语义的异常，
+                # 由调用方统一转成用户可读的提示，而不是让工具崩溃。
+                raise ValueError("SearXNG 返回的不是 JSON（请检查地址与反代配置）") from exc
 
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, list):
@@ -223,12 +240,9 @@ class FetchUrlTool(SuperAITool):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             return "URL 不合法，只支持 http/https。"
 
-        try:
-            max_chars = int(kwargs.get("max_chars") or 3000)
-        except (TypeError, ValueError):
-            max_chars = 3000
+        max_chars = as_int(kwargs.get("max_chars"), 3000)
         max_chars = max(200, min(20000, max_chars))
-        timeout = float(tool_ctx.config.web.get("timeout") or 15)
+        timeout = max(1.0, as_float(tool_ctx.config.web.get("timeout"), 15.0))
 
         headers = {"User-Agent": USER_AGENT, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
         timeout_cfg = aiohttp.ClientTimeout(total=timeout)

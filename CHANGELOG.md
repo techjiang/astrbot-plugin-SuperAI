@@ -2,6 +2,77 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.7
+
+这一版修掉 5 处「不报错、不崩溃，但功能静默失效」的问题。它们的共同根源是
+**没有任何测试守住「配置与上游数据的形状」**：框架只用 `_conf_schema.json`
+生成默认值，不做类型校验；工具的上游（知识库检索器、SearXNG）也不保证
+字段类型。插件只要直接 `int()` / `float()`，就会在真实部署里炸出异常 ——
+而异常又被框架的钩子调用器吞掉，界面上一片正常。
+
+### 修复（功能性）
+
+- **数字配置项填成非数字时，插件「加载成功」但每轮静默失效**。
+  `on_llm_request` 里有 `int(self.config.router.get("long_context_tokens") or 64000)`
+  这一行在**每条消息**上执行；用户把该字段填成 `64k` 时抛
+  `ValueError: invalid literal for int()`。异常被框架的 `call_event_hook()`
+  捕获后只打一段 traceback（见 `astrbot/core/pipeline/context_utils.py`），
+  于是**路由、记忆注入、预算拦截全部静默失效**，而插件看起来一切正常。
+  在 `__init__` 路径上则直接导致插件**加载失败**（`max_steps` /
+  `retention_days` 被填错时），被 `PluginManager` 记进 `failed_plugin_dict`。
+  现在所有面向用户配置的数字转换统一走 `as_int` / `as_float`
+  （容错解析 + 区间夹紧），共覆盖 11 处调用点。
+
+- **「最近 N 天」用量统计会跨月取数**。
+  `MetricsCollector.range_stats()` 此前是 `sorted(self._days)[-N:]`，
+  取的是「最近 N 个**有数据的日期**」而不是自然日区间。只要日期有断档
+  （用户停用几天、机器关机、或 `retention_days` 调大后重新统计），
+  取到的就是 `['2026-03-11', '2026-09-27']` 这种跨季度的桶 ——
+  `/superai stats 7`、Studio 面板与 `summary()` 会把半年前的用量算进来，
+  数字凭空翻倍而界面上看不出异常。现在按自然日补全区间，区间内没有数据
+  的日期返回**临时空桶**（不写入 `_days`，不会挤占 `retention_days` 名额），
+  趋势的 x 轴因此是完整时间轴。
+
+- **知识库工具会把本可用的检索结果整段丢弃**。
+  `retrieve_kb()` 里对相关度解析了两次，第二次写成裸
+  `float(item.get("score") or 0)`。上游给出非数字相关度时抛
+  `ValueError`，工具返回「工具执行失败：could not convert string to float: 'high'」——
+  **检索到的内容全部丢失**。现在只解析一次并复用结果，非数字降级为 `0.00`。
+
+- **联网搜索的配置错误与 JSON 解析失败会穿透**。
+  `WebSearchTool.run_tool()` 只捕获 `aiohttp.ClientError` / `TimeoutError`：
+  选了 `searxng` 却没填地址抛 `ValueError`；超时字段填成非数字时
+  `float()` 抛异常；SearXNG 被反代拦截返回 HTML 时 `json()` 抛
+  `JSONDecodeError`。现在全部转成用户可读的文本提示。
+
+- **网页抓取工具的同类问题**。
+  `FetchUrlTool` 的 `timeout` / `max_chars` 同样来自配置，
+  统一改用 `as_float` / `as_int`。
+
+### 测试（+34 项）
+
+- **`tests/test_config_robustness.py`（12 项）**：配置读取必须容错；
+  其中 `test_no_unguarded_numeric_conversion_of_config` 是一道
+  **结构性闸门** —— 它扫描全部插件源码，任何新出现的裸
+  `int(cfg.get(...))` / `float(cfg.get(...))` 都会被 CI 直接拦下，
+  因此这类问题无法「换个写法」再溜进来。
+- **`tests/test_tool_robustness.py`（19 项）**：知识库与联网工具在上游
+  返回非数字相关度、后端异常、缺少管理器、URL 不合法、超时字段非法等
+  情形下都必须优雅降级。
+- **`tests/test_metrics.py`（+3 项）**：`range_stats` 必须按自然日补全区间、
+  区间外数据不得计入总览、补全空桶不得持久化。
+
+### 同步
+
+- 版本号 v0.2.6 → v0.2.7：`superai/version.py`、`metadata.yaml`、README 徽章，
+  以及全部 17 篇文档的「最后核对」标注；新增 `docs/releases/v0.2.7.md`
+  与发布说明索引。
+
+### 无破坏性变更
+
+配置项、数据格式、指令签名与 v0.2.6 完全一致。统计口径的修正会让
+「最近 N 天」的数字**变小**（此前含区间外数据），这是预期行为。
+
 ## v0.2.6
 
 这一版修一个**用户一眼就能看见、但代码不会报错**的问题：插件市场卡片上的

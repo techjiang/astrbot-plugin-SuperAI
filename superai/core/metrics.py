@@ -310,9 +310,41 @@ class MetricsCollector:
         return self._bucket(create=False)
 
     def range_stats(self, days: int = 7) -> list[DailyStats]:
-        """返回最近 N 天的统计（含今天），按日期升序。"""
-        keys = sorted(self._days)[-max(1, days) :]
-        return [self._days[key] for key in keys]
+        """返回最近 N 个**自然日**的统计（含今天），按日期升序。
+
+        这里的「最近 N 天」必须是日历意义上的连续区间，而不是「最近 N 个有
+        数据的日期」。早前的实现直接 ``sorted(self._days)[-N:]``，只要有日期
+        断档（用户停用了几天、机器关机、或 ``retention_days`` 调大后重新开始
+        统计），取到的就是**跨月甚至跨季度**的桶：
+
+            range_stats(7) -> ['2026-03-11', '2026-09-27']
+
+        于是 ``/superai stats 7``、Studio 面板与 ``summary()`` 会把半年前的用量
+        算进「最近 7 天」，数字凭空翻倍，而界面上完全看不出异常。
+
+        现在按自然日展开：区间内的每一天都返回一个桶（没有数据的日期返回
+        空桶，``date`` 字段仍填正确日期）。这样「最近 N 天趋势」的 x 轴是
+        完整的时间轴，不会出现跳日，也不会把区间外的旧数据混进来。
+        """
+        span = max(1, int(days))
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        # 用本地时区的「今天 - (span-1) 天」作为起点，逐日推进，
+        # 避免依赖 timestamps 做日期运算时踩夏令时/闰秒的坑。
+        try:
+            from datetime import date, timedelta
+
+            end = date.fromisoformat(today)
+        except ValueError:  # pragma: no cover - 本机时间格式异常时的兜底
+            keys = sorted(self._days)[-span:]
+            return [self._days[key] for key in keys]
+
+        buckets: list[DailyStats] = []
+        for offset in range(span - 1, -1, -1):
+            key = (end - timedelta(days=offset)).isoformat()
+            # 只读路径：不存在的日期用临时空桶，绝不写进 self._days，
+            # 否则「打开面板」就会产生一堆幽灵日期并挤占 retention 名额。
+            buckets.append(self._days.get(key) or DailyStats(date=key))
+        return buckets
 
     def summary(self, days: int = 7) -> dict[str, Any]:
         """聚合最近 N 天的总览数据。
