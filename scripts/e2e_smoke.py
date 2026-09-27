@@ -344,6 +344,60 @@ def _check_tool_ownership(instance, module, ctx) -> None:
         f"未归属：{not_owned}",
     )
 
+    _check_logo_and_metadata(module)
+
+
+def _check_logo_and_metadata(module) -> None:
+    """用**框架真实的查找规则**验证 Logo 能被解析、元数据能被市场读取。
+
+    这一步专门守住「本地有图片 ≠ 插件列表有图标」：
+    框架写死 ``logo_fname = "logo.png"`` 并只对插件根目录做一次存在性探测，
+    路径/文件名差一点就是静默回落到默认图标。
+    """
+    from astrbot.core.star.star_manager import PluginManager
+
+    manager = PluginManager.__new__(PluginManager)  # 只为读类属性，不触发 __init__
+    logo_fname = getattr(manager, "logo_fname", "logo.png")
+    _check(
+        "框架认的图标文件名是 logo.png",
+        logo_fname == "logo.png",
+        f"logo_fname={logo_fname}",
+    )
+
+    # 复刻 star_manager 里的两行：拼路径 → exists
+    resolved = PLUGIN_ROOT / logo_fname
+    _check(
+        "框架能在插件根目录解析到图标",
+        resolved.is_file(),
+        str(resolved),
+    )
+
+    from PIL import Image
+
+    with Image.open(resolved) as icon:
+        _check(
+            "图标可被解码且带透明通道",
+            icon.format == "PNG" and icon.mode in {"RGBA", "LA", "P"},
+            f"{icon.format} {icon.size} {icon.mode}",
+        )
+
+    # metadata.yaml → StarMetadata 的关键字段（市场卡片直接读这些）
+    import yaml
+
+    metadata = yaml.safe_load((PLUGIN_ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    for field in ("name", "display_name", "author", "desc", "short_desc", "version", "repo"):
+        _check(f"metadata.{field} 已填写", bool(metadata.get(field)), str(metadata.get(field))[:60])
+    _check(
+        "metadata.author 是插件作者（商店卡片显示用）",
+        metadata["author"] == "TechSauce",
+        f"author={metadata['author']}",
+    )
+    _check(
+        "metadata.repo 指向发布仓库",
+        str(metadata["repo"]).startswith("https://github.com/"),
+        str(metadata["repo"]),
+    )
+
 
 if __name__ == "__main__":
     main()

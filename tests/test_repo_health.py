@@ -263,11 +263,16 @@ def test_plugin_market_identity_is_stable():
     市场规范把 ``plugin_id`` 定义为 ``metadata.author + "/" + metadata.name``，
     它是插件在市场里的**全局唯一标识**，也是已安装插件匹配更新的依据。
     改动它会导致老用户无法收到更新。
+
+    回归（Issue #1 v0.2.6）：``author`` 一度是平台账号 ``cosc``，
+    商店卡片上因此显示「作者：cosc」而不是插件作者。
+    现在统一为作者「科技酱」的包身份 ``TechSauce``；
+    字形（大小写、空格）也由断言锁住，避免出现 ``tech sauce`` 之类的变体。
     """
     metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
-    assert metadata["author"] == "cosc"
+    assert metadata["author"] == "TechSauce"
     assert metadata["name"] == "astrbot_plugin_superai"
-    assert f"{metadata['author']}/{metadata['name']}" == "cosc/astrbot_plugin_superai"
+    assert f"{metadata['author']}/{metadata['name']}" == "TechSauce/astrbot_plugin_superai"
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +298,7 @@ def test_metadata_plugin_id_stable():
     也是已安装插件匹配更新的依据 —— 改成展示名会让老用户收不到更新。
     """
     metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
-    assert metadata["author"] == "cosc", "author 必须是稳定包身份 cosc，不可改为展示名"
+    assert metadata["author"] == "TechSauce", "author 必须是稳定包身份 TechSauce"
     assert metadata["name"] == "astrbot_plugin_superai"
 
 
