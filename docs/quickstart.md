@@ -16,7 +16,7 @@
 
 ```bash
 cd AstrBot/data/plugins
-git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plugin_superai
+git clone https://github.com/techjiang/astrbot-plugin-SuperAI.git astrbot_plugin_superai
 ```
 
 然后重启 AstrBot（或在 WebUI 插件页点「重载插件」）。
@@ -77,4 +77,4 @@ AstrBot WebUI → 插件 → SuperAI → **SuperAI Studio**（`pages/studio/`）
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `quickstart` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `quickstart` 与测试断言，无凭空描述）

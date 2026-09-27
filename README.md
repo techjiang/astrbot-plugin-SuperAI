@@ -10,16 +10,16 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.4-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.5-orange)](./metadata.yaml)
 [![Docs](https://img.shields.io/badge/docs-%E4%B8%AD%E6%96%87-blue)](./docs/README.md)
 
-[文档](https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI/-/blob/main/docs/README.md) ·
+[文档](./docs/README.md) ·
 [快速上手](./docs/quickstart.md) ·
 [配置手册](./docs/configuration.md) ·
 [指令手册](./docs/commands.md) ·
 [常见问题](./docs/faq.md) ·
 [更新日志](./CHANGELOG.md) ·
-[Releases](https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI/-/releases)
+[Releases](https://github.com/techjiang/astrbot-plugin-SuperAI/releases)
 
 </div>
 
@@ -116,7 +116,10 @@ AstrBot 本身已经很好用，但当你真正把它跑在群里，很快就会
 
    ```bash
    cd AstrBot/data/plugins
-   git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plugin_superai
+   # 发布仓库（插件更新的解析来源）
+   git clone https://github.com/techjiang/astrbot-plugin-SuperAI.git astrbot_plugin_superai
+   # 国内网络更快：开发主仓库，内容与发布仓库一致
+   # git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plugin_superai
    ```
 
 2. **重载**：重启 AstrBot，或在插件页点「重载插件」；
@@ -260,6 +263,15 @@ AstrBot 与 SuperAI 版本、`/superai status` 输出、调试日志（请脱敏
 - 玲珑社区：https://forums.asoe.cn/
 - QQ 群：291974598
 - QQ 群②：474819022
+
+## 源码仓库
+
+| 用途 | 地址 |
+| --- | --- |
+| 发布仓库（AstrBot 官方商店读取、插件更新来源） | <https://github.com/techjiang/astrbot-plugin-SuperAI> |
+| 开发主仓库（Issue / CI / Releases） | <https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI> |
+
+两者内容一致：CNB 是开发基线，GitHub 是发布镜像（打 tag 时自动同步）。
 
 ## License
 

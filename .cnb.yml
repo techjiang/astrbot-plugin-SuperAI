@@ -54,3 +54,21 @@ main:
     - name: lint-and-test
       docker: *docker-config
       <<: *stages
+
+# 发布：打 tag（v*）时构建可上传 AstrBot 官方市场的 ZIP 制品，
+# 并（若配置了 GITHUB_TOKEN）把 main 与标签镜像到 GitHub 发布仓库。
+#
+# 镜像为什么放在流水线里：官方插件市场只接受 GitHub 仓库或 ZIP，
+# metadata.yaml 的 repo 指向 GitHub 镜像；CNB 仍是开发主仓库。
+# 未配置 GITHUB_TOKEN 时该阶段优雅跳过，不影响 Release 产出。
+tag:
+  tag_push:
+    - name: release-artifacts
+      docker: *docker-config
+      stages:
+        - name: 构建插件 ZIP
+          script:
+            - bash scripts/build_plugin_zip.sh
+        - name: 镜像到 GitHub
+          script:
+            - bash scripts/sync_github.sh

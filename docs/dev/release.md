@@ -68,6 +68,26 @@
 经验：**「静默失效」类问题一定要写清「为什么没有报错」**，
 否则后人会以为只是普通的逻辑 bug，改回去又坏一遍。
 
+## 双仓库同步（CNB → GitHub）
+
+AstrBot 官方插件市场只接受 **GitHub 仓库** 或 **ZIP 包**，因此本项目：
+
+- **CNB 是开发主仓库**：开发、CI、Issue、Release 都在这里；
+- **GitHub 是发布镜像**：`metadata.yaml` 的 `repo` 指向它，供官方商店读取与更新检测。
+
+同步由 `.cnb.yml` 的 `tag` 流水线完成（打 tag 时触发）：
+
+```bash
+# 阶段 1：构建可上传商店的 ZIP
+bash scripts/build_plugin_zip.sh        # → dist/astrbot_plugin_superai-v<版本>.zip
+# 阶段 2：镜像 main 与全部标签到 GitHub
+bash scripts/sync_github.sh             # 需要 GITHUB_TOKEN
+```
+
+配置 `GITHUB_TOKEN`：仓库 → 设置 → 环境变量，值是一个具备 `contents:write`
+权限的 GitHub 令牌（勿写入仓库）。**未配置时该阶段会打印提示并跳过**，
+不影响 CNB 侧的 Release 产出 —— 上架也可以直接用 ZIP 包。
+
 ## 发布说明归档
 
 历史发布说明放在 [`docs/releases/`](../releases/README.md)，
@@ -80,4 +100,4 @@
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）

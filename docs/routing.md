@@ -129,4 +129,4 @@ SuperRouter 在 `on_llm_request` 钩子上做一次决策：按「任务类型 +
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `superai/router` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `superai/router` 与测试断言，无凭空描述）

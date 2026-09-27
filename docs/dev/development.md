@@ -3,7 +3,7 @@
 ## 环境准备
 
 ```bash
-git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git
+git clone https://github.com/techjiang/astrbot-plugin-SuperAI.git
 cd astrbot-plugin-SuperAI
 
 # 运行依赖（AstrBot 已内置 aiohttp；单独跑测试时需要）
@@ -121,4 +121,4 @@ ASTRBOT_REF=/tmp/astrbot-ref python scripts/e2e_smoke.py  # 单独跑联调
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `.cnb.yml` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `.cnb.yml` 与测试断言，无凭空描述）

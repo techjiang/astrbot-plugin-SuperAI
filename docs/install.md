@@ -104,24 +104,32 @@ git pull
    `metadata.yaml`；
 2. **ZIP 压缩包上传**。
 
-### 本仓库的现状
+### 双仓库结构
 
-本仓库托管在 **CNB**，`metadata.yaml` 的 `repo` 指向 CNB 地址。
-`repo` 是真实可达的（AstrBot 客户端的仓库解析是 provider-neutral 的，
-可以正常 clone 与更新），但**无法直接用于官方商店提交** ——
-按官方文档与
-[插件市场 JSON 规范](https://github.com/AstrBotDevs/AstrBot/blob/master/docs/zh/dev/plugin-market/2026-06-27.md)，
-`repo` 应当是 GitHub 仓库地址（市场现有插件的 `repo` 全部是
-`https://github.com/<owner>/<repo>`）。
+本项目的**开发主仓库在 CNB**，**发布镜像在 GitHub**：
 
-### 上架需要做的事
+| 角色 | 地址 | 用途 |
+| --- | --- | --- |
+| 主仓库 | `https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI` | 开发、CI、Release、Issue |
+| 发布镜像 | `https://github.com/techjiang/astrbot-plugin-SuperAI` | 官方商店提交、GitHub 用户安装 |
 
-1. 把仓库同步到一个 GitHub 仓库（例如 `techjiang/astrbot_plugin_superai`）；
-2. 把 `metadata.yaml` 的 `repo` 改指该 GitHub 地址；
-3. 在 <https://cloud.astrbot.app/publish> 选择「GitHub」来源并授权，
-   平台会自动解析 `metadata.yaml`。
+`metadata.yaml` 的 `repo` 指向 **GitHub 镜像** —— 这是被官方商店接受的形式。
+两个仓库内容完全一致（镜像由 `scripts/sync_github.sh` 或 `.cnb.yml` 的
+`mirror-github` 阶段同步，见 [发布流程](./dev/release.md)）。
 
-`metadata.yaml` 的其余发布字段已按要求就绪：
+### 上架步骤
+
+1. 确认 GitHub 镜像已同步到最新发布提交；
+2. 在 <https://cloud.astrbot.app/publish> 选择「GitHub」来源并授权，
+   平台会自动解析 `metadata.yaml`；
+3. 若选择「ZIP 上传」，直接用 CNB Release 里附带的
+   `astrbot_plugin_superai-v<版本>.zip`（每次打 tag 自动构建）。
+
+> GitHub 镜像不可达时，也可以临时用 ZIP 上传完成上架 —— 两条通道等价。
+
+### 发布字段一览
+
+`metadata.yaml` 的发布字段均已就绪：
 
 | 字段 | 值 | 说明 |
 | --- | --- | --- |
@@ -130,6 +138,7 @@ git pull
 | `short_desc` | 一句话简介 | 市场卡片文案 |
 | `version` | 与 `superai/version.py` 一致 | 更新检测依据 |
 | `author` | `cosc` | **稳定的包身份**，不可改为展示名 |
+| `repo` | GitHub 镜像地址 | 官方商店读取与更新检测入口 |
 | `social_link` | `https://docs.asoe.cn` | 作者主页，进入市场索引 |
 | `tags` | 8 个标签 | 市场搜索与分类依据 |
 | `astrbot_version` | `>=4.5.7` | PEP 440 范围 |
@@ -141,4 +150,4 @@ git pull
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）

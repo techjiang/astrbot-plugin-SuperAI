@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -267,3 +268,50 @@ def test_plugin_market_identity_is_stable():
     assert metadata["author"] == "cosc"
     assert metadata["name"] == "astrbot_plugin_superai"
     assert f"{metadata['author']}/{metadata['name']}" == "cosc/astrbot_plugin_superai"
+
+
+# ---------------------------------------------------------------------------
+# 发布通道契约（v0.2.5 起）
+# ---------------------------------------------------------------------------
+def test_metadata_repo_points_to_github():
+    """``repo`` 必须是 GitHub 仓库地址。
+
+    AstrBot 官方插件市场只接受 GitHub 仓库或 ZIP 包，市场里的插件
+    ``repo`` 全部是 ``github.com/<owner>/<repo>``。指向别处会导致
+    提交被拒，或上架后无法做更新检测。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    repo = str(metadata["repo"])
+    assert repo.startswith("https://github.com/"), f"repo 必须指向 GitHub：{repo}"
+    assert repo.count("/") >= 4, f"repo 应是 https://github.com/<owner>/<repo>：{repo}"
+
+
+def test_metadata_plugin_id_stable():
+    """``author`` 必须是稳定包身份（不是展示名）。
+
+    ``plugin_id = author + "/" + name`` 是市场里的全局唯一标识，
+    也是已安装插件匹配更新的依据 —— 改成展示名会让老用户收不到更新。
+    """
+    metadata = yaml.safe_load((ROOT / "metadata.yaml").read_text(encoding="utf-8"))
+    assert metadata["author"] == "cosc", "author 必须是稳定包身份 cosc，不可改为展示名"
+    assert metadata["name"] == "astrbot_plugin_superai"
+
+
+def test_release_scripts_present_and_executable():
+    """发布通道依赖的两个脚本必须存在且可执行。
+
+    它们分别负责「构建可上传官方市场的 ZIP」与「同步 GitHub 发布镜像」，
+    缺失会让发布流程在打 tag 时断掉。
+    """
+    for name in ("sync_github.sh", "build_plugin_zip.sh"):
+        path = ROOT / "scripts" / name
+        assert path.exists(), f"缺少发布脚本 {name}"
+        assert os.access(path, os.X_OK), f"{name} 不可执行（git 会丢失可执行位）"
+
+
+def test_cnb_pipeline_has_tag_release_stage():
+    """``.cnb.yml`` 必须有 tag 触发的发布阶段。"""
+    pipeline = (ROOT / ".cnb.yml").read_text(encoding="utf-8")
+    assert "tag_push" in pipeline, "缺少 tag 触发配置"
+    assert "build_plugin_zip.sh" in pipeline, "tag 流水线未构建插件 ZIP"
+    assert "sync_github.sh" in pipeline, "tag 流水线未同步 GitHub 镜像"

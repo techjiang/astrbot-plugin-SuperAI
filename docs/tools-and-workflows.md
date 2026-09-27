@@ -141,4 +141,4 @@ SuperAI 把能力注册为 AstrBot 的 function calling 工具，由模型按需
 
 ---
 
-**最后核对**：`v0.2.4`（逐条对照 `superai/tools` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.5`（逐条对照 `superai/tools` 与测试断言，无凭空描述）

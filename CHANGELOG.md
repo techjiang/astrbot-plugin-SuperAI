@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.5
+
+这一版把**发布通道打通**：`repo` 从 CNB 地址改为 GitHub 仓库，插件可以正式提交
+AstrBot 官方插件市场；同时把 v0.2.4 的修复合并进 `main`，形成可发布的稳定基线。
+
+### 变更
+
+- **`metadata.yaml` 的 `repo` 改指 GitHub**：
+  `https://github.com/techjiang/astrbot-plugin-SuperAI`。
+  官方发布入口 <https://cloud.astrbot.app/publish> 只支持 GitHub 仓库（GitHub App
+  授权后读取仓库里的 `metadata.yaml`）或 ZIP 上传，`repo` 必须是 GitHub 地址才
+  能被提交与索引 —— 市场现有的插件 `repo` 全部是 `github.com/<owner>/<repo>`。
+- **版本号 v0.2.4 → v0.2.5**。`superai/version.py`、`metadata.yaml`、README 徽章与
+  各篇文档的「最后核对」标注同步更新（三方一致性由测试守住）。
+- **`main` 合并 v0.2.4**（PR #4）。此前 v0.2.4 的 tag 打在功能分支的提交上，
+  `main` 仍停留在 v0.2.3；现在 `main` 即发布基线。
+
+### 说明
+
+- 本仓库仍托管在 CNB，日常开发、CI 与 Release 都在 CNB；GitHub 仓库作为
+  **发布镜像**，用于官方商店提交与 GitHub 用户安装。
+- **无破坏性变更**：配置项、数据格式、指令签名与 v0.2.4 完全一致。
+
 ## v0.2.4
 
 这一版做两件事：**按要求修正 AstrBot 官方商店发布信息**，以及
