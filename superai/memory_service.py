@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
-from .core.utils import extract_json, normalize_space, strip_markup, truncate
+from .core.utils import as_int, extract_json, normalize_space, strip_markup, truncate
 
 if TYPE_CHECKING:  # pragma: no cover
     from .main import SuperAIPlugin
@@ -96,7 +96,7 @@ class MemoryService:
         """把对话压缩成摘要；失败时返回空字符串。"""
         if not dialogue.strip():
             return ""
-        limit = max(80, int(self.plugin.config.memory.get("summary_max_chars") or 600))
+        limit = as_int(self.plugin.config.memory.get("summary_max_chars"), 600, minimum=80)
         prompt = SUMMARY_PROMPT.format(limit=limit, dialogue=dialogue[:12000])
         try:
             text = await self.plugin.agent.simple(
@@ -123,7 +123,7 @@ class MemoryService:
         if not self.plugin.config.summary_enabled:
             return self.plugin.summaries.get(session).summary
 
-        trigger = max(4, int(self.plugin.config.memory.get("summary_trigger_rounds") or 12))
+        trigger = as_int(self.plugin.config.memory.get("summary_trigger_rounds"), 12, minimum=4)
         current = self.plugin.summaries.get(session)
         # history 是「最近一页」，长度恒等于页面大小，所以不能用它当总轮数。
         # 用摘要里累计的 total_rounds 判断是否到了该压缩的时候。

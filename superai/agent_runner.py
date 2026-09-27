@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from astrbot.api import logger
 
 from .core.errors import ProviderUnavailableError
-from .core.utils import retry_async
+from .core.utils import as_float, as_int, retry_async
 
 if TYPE_CHECKING:  # pragma: no cover
     from astrbot.core.agent.tool import ToolSet
@@ -80,10 +80,11 @@ class AgentExecutor:
             )
 
         agent_cfg = self.plugin.config.agent
-        max_steps = max(1, int(agent_cfg.get("max_steps") or 12))
-        tool_timeout = max(5, int(agent_cfg.get("tool_call_timeout") or 60))
+        max_steps = as_int(agent_cfg.get("max_steps"), 12, minimum=1)
+        tool_timeout = as_int(agent_cfg.get("tool_call_timeout"), 60, minimum=5)
         # 因为外层已经在做降级重试，内层不再交给 provider 自己无限重试
-        per_attempt_timeout = max(10.0, float(self.plugin.config.router.get("timeout") or 120))
+        # 同上：超时字段可能被填成非数字，必须容错解析。
+        per_attempt_timeout = max(10.0, as_float(self.plugin.config.router.get("timeout"), 120.0))
 
         outcome = AgentOutcome()
         usage_box: list[Any] = []

@@ -136,11 +136,14 @@ class SuperAIPlugin(Star):
         self.summaries = SummaryStore(JsonStore(data_dir / "summary.json"))
         self.workflows = WorkflowStore(
             JsonStore(data_dir / "workflows.json"),
-            max_steps=int(self.config.workflow.get("max_steps") or 8),
+            # 配置值一律走容错解析：WebUI 里这些是文本框，用户填 "8步" /
+            # "abc" 都会原样存下来（框架只用 schema 生成默认值，不做类型校验），
+            # 直接 int() 会在插件初始化时抛异常，整个插件加载失败。
+            max_steps=_as_int(self.config.workflow.get("max_steps"), 8, minimum=1),
         )
         self.metrics = MetricsCollector(
             data_dir,
-            retention_days=int(self.config.metrics.get("retention_days") or 30),
+            retention_days=_as_int(self.config.metrics.get("retention_days"), 30, minimum=1),
             debug=self.config.debug,
         )
 
@@ -255,7 +258,7 @@ class SuperAIPlugin(Star):
         self.metrics.flush()
         if self.config.long_term_enabled:
             self.memory.decay(
-                half_life_days=float(self.config.memory.get("decay_half_life_days") or 30)
+                half_life_days=_as_float(self.config.memory.get("decay_half_life_days"), 30.0)
             )
 
     # ------------------------------------------------------------------
@@ -631,7 +634,11 @@ class SuperAIPlugin(Star):
         tokens = estimate_tokens(req.prompt or "") + sum(
             estimate_tokens(str(item)) for item in contexts[-10:]
         )
-        threshold = int(self.config.router.get("long_context_tokens") or 64000)
+        # 这一行在**每条消息**的 on_llm_request 上执行，绝不能因为用户把该字段
+        # 填成非数字（WebUI 是文本框，框架不做类型校验）就抛 int() 异常 ——
+        # 那会让整个钩子被框架的 call_event_hook 吞掉，表现为「路由/记忆/预算
+        # 全部静默失效」，而用户只在日志里看到一段 traceback。
+        threshold = _as_int(self.config.router.get("long_context_tokens"), 64000)
         if threshold > 0 and tokens >= threshold:
             return "long_context"
         return "chat"
@@ -1270,7 +1277,7 @@ class SuperAIPlugin(Star):
             return
         await self.run_maintenance(force=True)
         removed = self.memory.decay(
-            half_life_days=float(self.config.memory.get("decay_half_life_days") or 30)
+            half_life_days=_as_float(self.config.memory.get("decay_half_life_days"), 30.0)
         )
         yield event.plain_result(f"✅ 维护完成：统计数据已落盘，记忆衰减淘汰 {removed} 条。")
 

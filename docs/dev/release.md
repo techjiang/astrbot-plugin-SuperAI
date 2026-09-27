@@ -100,4 +100,4 @@ bash scripts/sync_github.sh             # 需要 GITHUB_TOKEN
 
 ---
 
-**最后核对**：`v0.2.6`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.7`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）

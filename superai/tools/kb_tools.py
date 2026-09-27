@@ -51,6 +51,13 @@ async def retrieve_kb(
         for index, item in enumerate(results, 1):
             if not isinstance(item, dict):
                 continue
+            # 相关度必须只解析一次并复用解析结果。
+            # 早前这里解析成 ``score`` 之后，展示时又写了第二遍
+            # ``float(item.get("score") or 0)``（未加保护）—— 结果只要上游给出
+            # 非数字相关度（第三方 rerank / 稀疏检索器可能回 ``"high"``、
+            # ``None``、空串），第一遍能容错、第二遍直接抛 ValueError，
+            # 并且异常会一路穿透到工具执行器，把整轮对话打断，
+            # 而不是像这里其它分支一样优雅降级成「没有找到内容」。
             try:
                 score = float(item.get("score") or 0)
             except (TypeError, ValueError):
@@ -63,7 +70,7 @@ async def retrieve_kb(
                 continue
             lines.append(
                 f"{index}. 来源：{item.get('kb_name')} / {item.get('doc_name')}"
-                f"（相关度 {float(item.get('score') or 0):.2f}）\n   {content}"
+                f"（相关度 {score:.2f}）\n   {content}"
             )
         return "\n".join(lines)
 
