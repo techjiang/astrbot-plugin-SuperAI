@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.10
+
+这一版接着 v0.2.9 的图标问题往下挖：**图标文件本身已经没问题了，但用户反馈
+「刷新之后图标又变回默认星形」**。查下来根因不在本插件，而在 AstrBot 框架的
+图标分发链路，我们这边能做的是「定位 + 兜底」。
+
+### 定位
+
+- **插件图标 URL 走的是「一次性令牌」，只能用一次**。
+  框架 `plugin_service.get_plugin_logo_token()` 用 `_logo_cache` **复用**同一个
+  令牌，而 `file_token_service.handle_file()` 内部是 `staged_files.pop(token)`
+  —— **取一次即删**；`check_token_expired()` 只看「是否过期」，看不出
+  「已经被取走」。
+
+  实测（真实 AstrBot 源码）：
+
+  ```
+  图标令牌连续请求 5 次 -> [200, 404, 404, 404, 404]
+  ```
+
+  所以：第一次打开正常，**刷新 / 重新进入 / 换设备**就变默认星形；再叠加
+  `timeout=300`，静置 5 分钟图标也会失效。前端 `ExtensionCard.vue` 在
+  `@error` 时**永久**回落到默认图标。
+
+  这块**插件改不了** —— 列表卡片是框架渲染的。已把复现脚本、根因说明与
+  最小修复 patch（给 `FileTokenService` 增加 `reusable` 令牌，**默认仍是单次令牌**
+  以保留聊天文件链接的安全语义）整理到 `docs/dev/upstream/`，可直接 `git apply`。
+
+### 兜底
+
+- **新增框架令牌探测**：`superai/assets.py::probe_logo_token_service()` 在插件
+  启动时探测框架的令牌语义，命中就输出带**症状 / 原因 / 修复**的 warning，
+  把「刷新后图标消失」直接指向框架根因，而不是让用户反复检查配置。
+
+  它按**行为**判断（拿一个真文件注册后连读两次），不靠 `inspect` 看签名 ——
+  支持 `**kwargs` 的框架/替身会让签名检查看不出来。同步 / 异步上下文都能跑
+  （插件初始化在事件循环里，不能直接 `asyncio.run`），且在独立线程里执行，
+  不干扰调用方的事件循环。探测失败一律优雅降级，绝不影响插件启动。
+
+### 验证
+
+- `pytest tests` → **306 passed**（v0.2.9 为 298，新增 8 项令牌探测回归测试）
+- `ruff check` + `ruff format --check` → 全通过
+- `scripts/e2e_smoke.py`（真实 AstrBot 4.28.1）→ 全部通过，并确认探测逻辑
+  真的跑在真实框架上（未命中问题时不会静默跳过）
+- 上游 patch 在**干净的 AstrBot 源码**上 `git apply --check` 通过并实测生效：
+  `tests/test_media_utils.py -k file_token` → 4 passed；全量 3587 passed
+
 ## v0.2.9
 
 这一版修的是「**用户看得见、日志里查不到**」的问题：插件图标。

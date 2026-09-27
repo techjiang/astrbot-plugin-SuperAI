@@ -73,10 +73,62 @@ if os.path.exists(logo_path):  # 第 1376 行
    PNG 编码后约 600 KB —— 弱网 / 移动端上用户的感受就是
    「图标一直不显示」。项目约定 ≤ 512×512 / 256 KB。
 
-WebUI 那一侧是另一条链路：`PluginService.get_plugin_logo()` 把
+WebUI 那一侧是另一条链路：`PluginService.get_plugin_logo_token()` 把
 `logo_path` 注册成临时 token，前端再请求 `/api/file/<token>`。
 所以「插件列表图标」与 `pages/studio/logo.png`（静态路由）互不影响，
 两条都要各自保证是有效 PNG。
+
+#### ⚠️ 框架坑：图标 token 只能用一次（刷新后图标消失）
+
+这是 Issue #1 最后一轮排查出来的**框架侧**问题，症状极具迷惑性：
+
+- 刚装完**第一次**打开插件列表：图标正常；
+- **刷新页面 / 重新进入 / 换一台设备**：变成默认星形图标。
+
+真实框架源码（截至本仓库写作时）：
+
+```python
+# astrbot/dashboard/services/plugin_service.py
+async def get_plugin_logo_token(self, logo_path: str) -> str | None:
+    if token := self._logo_cache.get(logo_path):
+        if not await file_token_service.check_token_expired(token):
+            return token  # ← 复用同一个 token
+    token = await file_token_service.register_file(logo_path, timeout=300)
+    self._logo_cache[logo_path] = token
+    return token
+```
+
+```python
+# astrbot/core/file_token_service.py
+async def handle_file(self, file_token: str) -> str:
+    ...
+    file_path, _ = self.staged_files.pop(file_token)  # ← pop：取一次就删
+```
+
+`_logo_cache` 会**复用**同一个 token，而 `handle_file()` 是**一次性**语义，
+`check_token_expired()` 只看「是否过期」，看不出「已经被取走」。
+于是：第一次请求 200，之后永远是 404；再加上 `timeout=300`，
+即使不刷新，静置 5 分钟后图标也会失效。
+
+前端 `ExtensionCard.vue` 在 `@error` 时**永久**回落到 `defaultPluginIcon`：
+
+```js
+if (logoLoadFailed.value) return defaultPluginIcon;
+```
+
+**这块插件改不了** —— 列表卡片是框架渲染的。插件能做的只有：
+
+1. 启动时探测并写日志（`superai/assets.py::probe_logo_token_service()`），
+   把「刷新后图标消失」直接指向框架根因，而不是让用户去查什么配置；
+2. 等上游修复。修复方式是给 `FileTokenService` 增加**可重复读取**的令牌：
+   `register_file(..., reusable=True)` + `handle_file()` 对 reusable 令牌
+   不 `pop`，且 `plugin_service` 用 `reusable=True` + 更长 TTL 签发图标 token。
+   注意**默认必须仍是单次令牌** —— 聊天里的文件链接「取一次即失效」是
+   有安全意义的，不能顺手改默认值。
+
+`scripts/e2e_smoke.py` 会在真实框架上跑一遍探测，确认探测逻辑真的生效
+（而不是静默跳过）；`tests/test_logo_token_probe.py` 守住「能认出问题、
+不误报、任何上下文都不抛异常」。
 
 #### 运行时自检：把「静默失效」变成日志
 
@@ -267,4 +319,4 @@ SuperAI 记录 `decayed_at`，让衰减幂等。
 
 ---
 
-**最后核对**：`v0.2.9`（逐条对照 `tests/` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.10`（逐条对照 `tests/` 与测试断言，无凭空描述）

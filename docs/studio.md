@@ -63,4 +63,4 @@ telegram:PrivateMessage:987654321
 
 ---
 
-**最后核对**：`v0.2.9`（逐条对照 `pages/studio` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.10`（逐条对照 `pages/studio` 与测试断言，无凭空描述）

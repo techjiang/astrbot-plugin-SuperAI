@@ -1,0 +1,170 @@
+--- a/astrbot/core/file_token_service.py	2026-09-27 18:05:37.092260576 +0800
++++ b/astrbot/core/file_token_service.py	2026-09-27 18:06:33.887471381 +0800
+@@ -10,6 +10,8 @@
+     def __init__(self, default_timeout: float = 300) -> None:
+         self.lock = asyncio.Lock()
+         self.staged_files = {}  # token: (file_path, expire_time)
++        # 可重复读取的令牌（不消费）。图标等被前端缓存的静态资源用它。
++        self.reusable_tokens: set[str] = set()
+         self.default_timeout = default_timeout
+ 
+     async def _cleanup_expired_tokens(self) -> None:
+@@ -20,21 +22,32 @@
+         ]
+         for token in expired_tokens:
+             self.staged_files.pop(token, None)
++            self.reusable_tokens.discard(token)
+ 
+     async def check_token_expired(self, file_token: str) -> bool:
+         async with self.lock:
+             await self._cleanup_expired_tokens()
+             return file_token not in self.staged_files
+ 
+-    async def register_file(self, file_path: str, timeout: float | None = None) -> str:
++    async def register_file(
++        self,
++        file_path: str,
++        timeout: float | None = None,
++        reusable: bool = False,
++    ) -> str:
+         """向令牌服务注册一个文件。
+ 
+         Args:
+             file_path(str): 文件路径
+             timeout(float): 超时时间，单位秒（可选）
++            reusable(bool): 是否签发「可重复读取」的令牌。
++                默认 ``False`` 保持原有单次令牌语义（消息附件等）；
++                静态资源（插件图标）应传 ``True``。
++                单次令牌是历史行为，且对安全性有实际意义
++                （聊天中的文件链接取一次即失效），因此不做默认值变更。
+ 
+         Returns:
+-            str: 一个单次令牌
++            str: 令牌（``reusable=False`` 时为单次令牌）
+ 
+         Raises:
+             FileNotFoundError: 当路径不存在时抛出
+@@ -64,10 +77,16 @@
+             )
+             # 存储转换后的真实路径
+             self.staged_files[file_token] = (local_path, expire_time)
++            if reusable:
++                self.reusable_tokens.add(file_token)
+             return file_token
+ 
+     async def handle_file(self, file_token: str) -> str:
+-        """根据令牌获取文件路径，使用后令牌失效。
++        """根据令牌获取文件路径。
++
++        - 普通令牌（``register_file(reusable=False)``）：使用后立即失效（单次令牌）。
++        - 可重复令牌（``register_file(reusable=True)``）：在过期前可反复读取，
++          适用于插件图标这类会被前端缓存的静态资源。
+ 
+         Args:
+             file_token(str): 注册时返回的令牌
+@@ -86,7 +105,10 @@
+             if file_token not in self.staged_files:
+                 raise KeyError(f"Invalid or expired file token: {file_token}")
+ 
+-            file_path, _ = self.staged_files.pop(file_token)
++            if file_token in self.reusable_tokens:
++                file_path, _ = self.staged_files[file_token]
++            else:
++                file_path, _ = self.staged_files.pop(file_token)
+             if not os.path.exists(file_path):
+                 raise FileNotFoundError(f"File does not exist: {file_path}")
+             return file_path
+--- a/astrbot/dashboard/services/plugin_service.py	2026-09-27 18:05:37.121260173 +0800
++++ b/astrbot/dashboard/services/plugin_service.py	2026-09-27 18:06:36.440435906 +0800
+@@ -109,6 +109,11 @@
+         }
+         self._logo_cache: dict[str, str] = {}
+ 
++    # 插件图标令牌有效期：图标是静态资源，前端会长期缓存。
++    # 与 POST /api/file 的 300s 一次性令牌区分开（图标必须可重复读取）。
++    PLUGIN_LOGO_TOKEN_TTL = 24 * 3600
++
++
+     @staticmethod
+     def _payload(data: object) -> dict[str, Any]:
+         return data if isinstance(data, dict) else {}
+@@ -281,11 +286,23 @@
+         return f"/api/file/{logo_token}" if logo_token else None
+ 
+     async def get_plugin_logo_token(self, logo_path: str) -> str | None:
++        """为插件图标签发一个**可重复读取**的令牌。
++
++        注意：不能复用 ``POST /api/file`` 的一次性令牌语义。
++        图标 URL 会被前端缓存并在刷新 / 换设备 / 缓存过期时再次请求，
++        而一次性令牌在第一次读取后即失效（``staged_files.pop``），
++        导致图标只在第一次显示、之后变成默认星形图标。
++        """
+         try:
+             if token := self._logo_cache.get(logo_path):
+                 if not await file_token_service.check_token_expired(token):
+                     return token
+-            token = await file_token_service.register_file(logo_path, timeout=300)
++            # 24h：图标是静态资源，不必频繁轮换；仍保留过期回收能力
++            token = await file_token_service.register_file(
++                logo_path,
++                timeout=PLUGIN_LOGO_TOKEN_TTL,
++                reusable=True,
++            )
+             self._logo_cache[logo_path] = token
+             return token
+         except Exception as exc:
+--- a/tests/test_media_utils.py	2026-09-27 18:05:37.179259367 +0800
++++ b/tests/test_media_utils.py	2026-09-27 18:14:28.723875049 +0800
+@@ -765,6 +765,52 @@
+     assert await service.handle_file(token) == str(file_path)
+ 
+ 
++@pytest.mark.asyncio
++async def test_file_token_service_reusable_token_can_be_read_repeatedly(tmp_path):
++    """可重复令牌：用于插件图标这类会被前端缓存的静态资源。
++
++    回归：插件图标走一次性令牌时，第一次读取后令牌即失效，
++    于是页面刷新 / 换设备 / 缓存过期后图标变成默认星形（404）。
++    """
++    file_path = tmp_path / "logo.png"
++    file_path.write_bytes(b"PNG")
++
++    service = FileTokenService()
++    token = await service.register_file(str(file_path), timeout=300, reusable=True)
++
++    for _ in range(5):
++        assert await service.handle_file(token) == str(file_path)
++
++
++@pytest.mark.asyncio
++async def test_file_token_service_default_token_is_still_single_use(tmp_path):
++    """默认令牌必须保持「取一次即失效」语义（消息附件依赖它）。"""
++    file_path = tmp_path / "doc.txt"
++    file_path.write_text("doc", encoding="utf-8")
++
++    service = FileTokenService()
++    token = await service.register_file(str(file_path))
++
++    assert await service.handle_file(token) == str(file_path)
++    with pytest.raises(KeyError):
++        await service.handle_file(token)
++
++
++@pytest.mark.asyncio
++async def test_file_token_service_reusable_token_expiry_is_reclaimed(tmp_path):
++    """可重复令牌也会过期，且过期后 reusable 标记要被一并回收（不泄漏内存）。"""
++    file_path = tmp_path / "logo.png"
++    file_path.write_bytes(b"PNG")
++
++    service = FileTokenService()
++    token = await service.register_file(str(file_path), timeout=-1, reusable=True)
++
++    assert await service.check_token_expired(token) is True
++    assert token not in service.reusable_tokens
++    with pytest.raises(KeyError):
++        await service.handle_file(token)
++
++
+ def test_path_mapping_accepts_standard_and_legacy_file_uri(tmp_path):
+     source_root = tmp_path / "source"
+     target_root = tmp_path / "target"

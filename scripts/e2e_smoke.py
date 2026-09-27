@@ -28,7 +28,12 @@ ASTRBOT_REF = Path(os.environ.get("ASTRBOT_REF", "/tmp/astrbot-ref"))
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from superai.assets import LOGO_MAX_BYTES, LOGO_MAX_SIDE, inspect_logo  # noqa: E402
+from superai.assets import (  # noqa: E402
+    LOGO_MAX_BYTES,
+    LOGO_MAX_SIDE,
+    inspect_logo,
+    probe_logo_token_service,
+)
 
 
 def _fail(msg: str) -> None:
@@ -405,6 +410,20 @@ def _check_logo_and_metadata(module) -> None:
         "插件自带的图标自检在真实仓库上通过",
         bool(report["ok"]),
         str(report.get("problems") or "无问题"),
+    )
+
+    # 图标「刷新后变默认星形」的根因在框架侧：图标 URL 走一次性令牌。
+    # 插件改不了框架渲染的卡片，但要能一眼定位根因 —— 这里确认探测逻辑
+    # 真的跑在真实框架的 file_token_service 上（而不是静默跳过）。
+    probe = probe_logo_token_service()
+    _check(
+        "能在真实框架上执行图标令牌探测",
+        bool(probe["available"]),
+        str(probe["detail"]),
+    )
+    print(
+        f"ℹ️  框架图标令牌可重复读取：{not probe['single_use']}"
+        f"（False 表示命中一次性令牌问题，属框架侧，已记录到启动日志）"
     )
 
     # metadata.yaml → StarMetadata 的关键字段（市场卡片直接读这些）
