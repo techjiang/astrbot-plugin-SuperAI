@@ -1,6 +1,6 @@
 # SuperAI 流水线：代码风格检查 + 单元测试 + 真实 AstrBot 端到端联调
 #
-# AstrBot 本体要求 Python >= 3.12，因此这里直接使用 python:3.12 镜像。
+# AstrBot 本体要求 Python >= 3.12，因此 CI 镜像基于 python:3.12-slim 构建。
 # 插件运行依赖（requirements.txt，如 aiohttp）由 AstrBot 内置，
 # 但测试环境没有 AstrBot，因此 CI 需显式安装运行依赖 + 测试依赖。
 #
@@ -8,10 +8,17 @@
 # （既慢又可能因网络抖动失败）。
 
 .docker-config: &docker-config
-  image:
+  # 用 Dockerfile 构建临时镜像：docker.build 的子字段只有
+  # dockerfile / target / by / versionBy / buildArgs / ignoreBuildArgsInVersion，
+  # 不支持 context（构建上下文固定为仓库根目录）。
+  # 写成 docker.image.dockerfile 会在 Prepare 阶段直接失败：
+  #   docker pull failed: image: [object Object] is not allow.
+  build:
     dockerfile: .ci/Dockerfile
-    # 构建上下文取仓库根目录：镜像里要预装 requirements*.txt
-    context: .
+    # 声明构建缓存依赖：这两个文件变化才需要重新执行 pip install 层
+    by:
+      - requirements.txt
+      - requirements-dev.txt
 
 .stages: &stages
   stages:
