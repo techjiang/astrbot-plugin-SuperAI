@@ -128,3 +128,56 @@ def test_workflow_runs_recorded(tmp_path):
     runs = store.recent_runs(5)
     assert runs and runs[0]["name"] == "早报"
     assert runs[0]["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# 记忆衰减：必须与「维护次数」无关
+# ---------------------------------------------------------------------------
+def test_decay_is_idempotent_across_maintenance_runs(tmp_path):
+    """回归：连续跑维护时，衰减量只能取决于真实经过时间，不能逐次叠加。
+
+    旧实现用 ``now - updated_at`` 当衰减区间，而 ``updated_at`` 在衰减时
+    不会推进，于是每跑一次维护就把同一个时间差再乘一遍，
+    一条 1 天前的记忆会在 30 天半衰期下被反复打折直至清掉。
+    """
+    import time
+
+    from superai.storage.memory import MemoryStore
+    from superai.storage.store import JsonStore
+
+    store = MemoryStore(JsonStore(tmp_path / "memory.json"))
+    store.add("s", "这是一条比较长的事实内容")
+
+    raw = store._all()
+    raw["s"][0]["updated_at"] = int(time.time()) - 86400  # 1 天前
+    store._store.save("long_term")
+
+    weights = []
+    for _ in range(4):
+        store.decay(half_life_days=30)
+        entries = store._all().get("s") or []
+        assert entries, "1 天前的记忆不该被淘汰"
+        weights.append(entries[0]["weight"])
+
+    assert len(set(weights)) == 1, f"重复衰减不应改变权重，实际 {weights}"
+    # 30 天半衰期、1 天 → 0.5^(1/30) ≈ 0.9772
+    assert 0.97 <= weights[0] <= 0.98
+
+
+def test_decay_eventually_removes_stale_memory(tmp_path):
+    """真正过期的记忆仍应被淘汰（衰减功能不能被修坏）。"""
+    import time
+
+    from superai.storage.memory import MemoryStore
+    from superai.storage.store import JsonStore
+
+    store = MemoryStore(JsonStore(tmp_path / "memory.json"))
+    store.add("s", "这是一条很久以前的事实")
+    raw = store._all()
+    raw["s"][0]["updated_at"] = int(time.time()) - 86400 * 400  # 400 天前
+    raw["s"][0]["weight"] = 0.5
+    store._store.save("long_term")
+
+    removed = store.decay(half_life_days=30)
+    assert removed == 1
+    assert store._all().get("s") == []

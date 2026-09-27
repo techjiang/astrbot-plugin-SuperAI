@@ -18,7 +18,8 @@
     "default": [
       "chat",
       "agent",
-      "long_context"
+      "long_context",
+      "image"
     ]
   },
   "debug": {
@@ -298,12 +299,6 @@
         "type": "text",
         "hint": "会追加到 system_prompt，用于设定 SuperAI 的角色与风格。",
         "default": ""
-      },
-      "stream": {
-        "description": "流式输出",
-        "type": "bool",
-        "hint": "保留项：开启后 /ai 走流式渲染（当前版本直接由 AstrBot 主流程控制）。",
-        "default": true
       }
     }
   },

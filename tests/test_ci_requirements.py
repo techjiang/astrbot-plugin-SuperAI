@@ -84,8 +84,8 @@ def test_test_suite_imports_are_declared(dev_requirements):
                 third_party.add(match.group(1).lower())
     third_party -= stdlib
     third_party -= {"astrbot", "superai", "tests", "conftest"}
-    # 包名与 import 名不一致的映射（import yaml -> pyyaml）
-    aliases = {"yaml": "pyyaml"}
+    # 包名与 import 名不一致的映射（import yaml -> pyyaml, import PIL -> pillow）
+    aliases = {"yaml": "pyyaml", "pil": "pillow"}
     third_party = {aliases.get(name, name) for name in third_party}
     assert third_party <= dev_requirements, (
         "以下三方包被 tests 导入但未声明在 requirements-dev.txt："

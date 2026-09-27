@@ -32,6 +32,8 @@ KB_BLOCK = "<knowledge_base>\n{kb_context}\n</knowledge_base>"
 
 ROUTE_BLOCK = '<request_route tier="{tier}">\n{reason}\n</request_route>'
 
+WEB_HINT_BLOCK = "<web_search_hint>\n{hint}\n</web_search_hint>"
+
 #: 注入到 system_prompt 的稳定指令（不随轮次变化）
 STABLE_INSTRUCTION = (
     "你由 SuperAI 增强运行。用户消息末尾可能附带 <superai_context> 区块，"
@@ -51,6 +53,7 @@ def build_dynamic_block(
     kb_context: str = "",
     route_tier: str = "",
     route_reason: str = "",
+    web_hint: str = "",
     include_time: bool = False,
     timestamp: str = "",
 ) -> str:
@@ -76,6 +79,8 @@ def build_dynamic_block(
         blocks.append(KB_BLOCK.format(kb_context=kb_context.strip()[:3000]))
     if route_tier:
         blocks.append(ROUTE_BLOCK.format(tier=route_tier, reason=route_reason or "-"))
+    if web_hint:
+        blocks.append(WEB_HINT_BLOCK.format(hint=web_hint.strip()))
     if not blocks:
         return ""
     return DYNAMIC_TEMPLATE.format(blocks="\n\n".join(blocks))
@@ -98,6 +103,7 @@ def has_dynamic_content(
     memories: list[str] | None = None,
     kb_context: str = "",
     route_tier: str = "",
+    web_hint: str = "",
     include_time: bool = False,
 ) -> bool:
     """判断是否真的需要注入动态块。
@@ -112,6 +118,7 @@ def has_dynamic_content(
         or [item for item in (memories or []) if str(item).strip()]
         or (kb_context or "").strip()
         or (route_tier or "").strip()
+        or (web_hint or "").strip()
     )
 
 

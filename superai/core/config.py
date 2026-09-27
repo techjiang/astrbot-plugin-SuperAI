@@ -12,14 +12,17 @@ from typing import Any
 
 from .errors import ConfigError
 from .utils import as_bool as _as_bool
+from .utils import as_float as _as_float
 from .utils import as_int as _as_int
 from .utils import as_list as _as_list
 
 # ---------------------------------------------------------------------------
 # 默认值：与 _conf_schema.json 保持一致，便于单测与缺省兜底
 # ---------------------------------------------------------------------------
+#: 默认启用的任务类型。注意必须包含 image —— 否则「有图片就走视觉档」的
+#: 路由能力默认就是关闭的，而用户很难从「任务白名单」联想到这一点。
 
-DEFAULT_ENABLED_TASKS = ["chat", "agent", "long_context"]
+DEFAULT_ENABLED_TASKS = ["chat", "agent", "long_context", "image"]
 
 ROUTER_DEFAULTS: dict[str, Any] = {
     "enabled": True,
@@ -70,7 +73,6 @@ AGENT_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "max_steps": 12,
     "tool_call_timeout": 60,
-    "stream": True,
     "system_prompt": "",
 }
 
@@ -201,17 +203,9 @@ class SuperAIConfig:
             "long_context": str(router.get("long_context_provider_id") or ""),
         }
 
-    def int_option(self, section: dict[str, Any], key: str, default: int) -> int:
-        """从某个配置分组里安全地读整数。"""
-        return _as_int(section.get(key), default)
-
     def tier_provider(self, tier: str) -> str:
         """读取某个档位配置的 provider id。"""
         return str(self.provider_map().get(tier) or "")
-
-    def relative_tier(self, tier: str) -> str:
-        """把 ``default`` 档位归一化为具体档位，便于取超时等参数。"""
-        return "strong" if tier not in self.provider_map() else tier
 
     def keyword_routes(self) -> dict[str, str]:
         """关键词 -> 路由档位。用于 rule 策略。"""
@@ -276,3 +270,14 @@ def build_config(raw: Any) -> SuperAIConfig:
         workflow=_merge(WORKFLOW_DEFAULTS, _as_dict(source.get("workflow"), "workflow")),
         raw=source,
     )
+
+
+__all__ = [
+    "ConfigError",
+    "SuperAIConfig",
+    "build_config",
+    "_as_bool",
+    "_as_float",
+    "_as_int",
+    "_as_list",
+]

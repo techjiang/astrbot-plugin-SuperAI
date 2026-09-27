@@ -28,11 +28,12 @@ from astrbot.api.web import error_response, json_response, request
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .agent_runner import AgentExecutor
-from .core.config import _as_bool, _as_int, build_config
+from .core.config import _as_bool, _as_float, _as_int, build_config
 from .core.errors import ProviderUnavailableError, SuperAIError
 from .core.metrics import MetricsCollector
 from .core.utils import (
     estimate_tokens,
+    fingerprint,
     normalize_space,
     strip_markup,
     truncate,
@@ -63,6 +64,13 @@ MAX_PENDING_REQUESTS = 500
 
 #: 记忆维护的节流间隔（秒），避免每轮对话都全量扫描
 MAINTENANCE_INTERVAL = 600
+
+#: 事实抽取的节流间隔（秒）。抽取要调一次模型，不节流的话每轮都会烧钱；
+#: 同一条对话内容也会被指纹去重，所以间隔可以取得比较宽松。
+FACT_EXTRACT_INTERVAL = 180
+
+#: 单个会话最多保留多少条「上次事实抽取时间」记录
+MAX_FACT_EXTRACT_SESSIONS = 2000
 
 #: 可被 /superai route 指定的档位
 SELECTABLE_TIERS = (*ALL_TIERS, TIER_DEFAULT)
@@ -112,6 +120,10 @@ class SuperAIPlugin(Star):
 
         self._session_cooldown: dict[str, float] = {}
         self._session_tier: dict[str, str] = {}
+        self._last_fact_extract: dict[str, float] = {}
+        """会话 -> 上次事实抽取时间，用于节流（否则每轮都调一次模型）"""
+        self._last_fact_fingerprint: dict[str, str] = {}
+        """会话 -> 上次抽取过的对话指纹，内容没变就不再抽"""
         self._request_started: deque[tuple[str, float]] = deque(maxlen=MAX_PENDING_REQUESTS)
         """(会话, 本轮请求起始时间)，用于统计耗时；有界以免长期运行泄漏"""
 
@@ -399,7 +411,16 @@ class SuperAIPlugin(Star):
     # ------------------------------------------------------------------
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
-        """在请求 LLM 前完成：预算检查 → 记忆/摘要注入 → 模型路由。"""
+        """在请求 LLM 前完成：预算检查 → 记忆/摘要注入 → 模型路由。
+
+        注意：这里**必须是普通协程**，不能写成 async generator。
+        AstrBot 的 ``call_event_hook()`` 对 LLM 钩子只做 ``await handler(event, req)``
+        （见 ``astrbot/core/pipeline/context_utils.py``），并不像普通事件管线那样
+        ``async for`` 迭代生成器。如果这里出现 ``yield``，函数会变成 async
+        generator，``await`` 它会直接抛 ``TypeError: object async_generator
+        can't be used in 'await' expression``，被 ``call_event_hook`` 静默吞掉，
+        结果是**路由、记忆注入、图片保护全部失效**而日志里只有一行 error。
+        """
         if not self.config.enabled:
             return
         self._last_active_ts = int(time.time())
@@ -415,6 +436,12 @@ class SuperAIPlugin(Star):
         #    多模态请求退化成纯文本（见 README「与 AstrBot 的协作」一节）
         original_images = list(getattr(req, "image_urls", None) or [])
 
+        # 0.1) 按「任务类型」开关决定本轮是否接管。
+        #      enabled_tasks 是 WebUI 里给用户的任务白名单；此前虽然读进了配置，
+        #      但没有任何代码消费它，等于用户勾选无效。
+        if not self.config.is_task_enabled(self._task_kind(req, original_images)):
+            return
+
         # 1) 预算检查
         self.metrics.flush()
         over_budget = self.metrics.check_budget(
@@ -423,7 +450,10 @@ class SuperAIPlugin(Star):
         )
         if over_budget:
             logger.warning(f"[SuperAI] {over_budget}")
-            yield event.plain_result(over_budget)
+            # 钩子是普通协程，不能用 yield 返回结果，否则会退化成 async generator；
+            # 也不能只调 plain_result()（它只是「构造」结果，不会挂到事件上），
+            # 必须 set_result() 才能把话术真正发给用户。
+            event.set_result(event.plain_result(over_budget))
             event.stop_event()
             return
 
@@ -442,6 +472,20 @@ class SuperAIPlugin(Star):
 
         kb_context = await self._maybe_recall_knowledge(req.prompt or "")
 
+        # 3.5) 若问到时效性问题且联网工具可用，提示模型主动搜索。
+        #      Router 的 needs_web() 早前没有任何调用点，等于关键词表是死的。
+        web_hint = ""
+        if (
+            self.config.web_enabled
+            and "superai_web_search" in self.tool_names
+            and self.router.needs_web(req.prompt or "")
+        ):
+            web_hint = (
+                "用户的问题可能涉及实时信息，"
+                "请优先调用 superai_web_search 获取最新结果后再回答；"
+                "如果搜索结果不足以支撑结论，请如实说明。"
+            )
+
         # 4) 路由决策
         route_tier = ""
         if self.config.router_enabled:
@@ -455,12 +499,14 @@ class SuperAIPlugin(Star):
             memories=memories,
             kb_context=kb_context,
             route_tier=route_block_tier,
+            web_hint=web_hint,
         ):
             block = build_dynamic_block(
                 summary=summary,
                 memories=memories,
                 kb_context=kb_context,
                 route_tier=route_block_tier,
+                web_hint=web_hint,
                 include_time=False,
             )
             if block and not append_dynamic(req, block):
@@ -473,22 +519,46 @@ class SuperAIPlugin(Star):
             merged = list(dict.fromkeys([*current, *original_images]))
             req.image_urls = merged
 
+    def _task_kind(self, req: ProviderRequest, images: list[str]) -> str:
+        """判断本轮请求属于哪种任务类型（对应 ``enabled_tasks`` 白名单）。
+
+        - ``image``：带图片的多模态请求；
+        - ``agent``：请求已经挂了工具（说明处于工具调用链路）；
+        - ``long_context``：上下文 token 数超过长上下文阈值；
+        - ``chat``：其余普通对话。
+        """
+        if images or getattr(req, "audio_urls", None):
+            return "image"
+        if getattr(req, "func_tool", None) is not None:
+            return "agent"
+        contexts = getattr(req, "contexts", None) or []
+        tokens = estimate_tokens(req.prompt or "") + sum(
+            estimate_tokens(str(item)) for item in contexts[-10:]
+        )
+        threshold = int(self.config.router.get("long_context_tokens") or 64000)
+        if threshold > 0 and tokens >= threshold:
+            return "long_context"
+        return "chat"
+
     async def _prepare_memory(
         self, event: AstrMessageEvent, req: ProviderRequest, session: str
     ) -> str:
         """更新滚动摘要，并在必要时触发后台事实抽取。"""
         try:
+            # 先累计轮数：即使历史读取失败（会话刚建立、DB 抖动），
+            # 轮数也应该增长，否则摘要触发条件永远不成立。
+            self.summaries.bump_rounds(session, 1)
+
             history = await self._history_texts(event)
             if not history:
                 return self.summaries.get(session).summary
 
-            self.summaries.bump_rounds(session, 1)
             summary = await self.memory_service.maybe_summarize(session, history)
             if summary:
                 return summary
 
-            # 每轮都尝试抽取（内部有指纹去重 + 阈值判断）
-            if self.config.long_term_enabled and self.config.memory.get("extract_facts", True):
+            # 事实抽取要额外调一次模型，必须节流：否则每轮对话都会烧一次钱。
+            if self._should_extract_facts(session, history):
                 self._spawn(
                     self.memory_service.extract_facts(session, "\n".join(history[-10:])),
                     name="fact-extract",
@@ -497,6 +567,41 @@ class SuperAIPlugin(Star):
         except Exception as exc:  # noqa: BLE001 - 记忆处理失败不应影响对话
             logger.debug(f"[SuperAI] 会话记忆处理失败：{exc}")
             return self.summaries.get(session).summary
+
+    def _should_extract_facts(self, session: str, history: list[str]) -> bool:
+        """判断本轮是否需要跑事实抽取。
+
+        抽取要调用一次模型，成本不低，所以加两层节流：
+
+        1. **时间节流**：同一会话至少在 ``FACT_EXTRACT_INTERVAL`` 秒内只抽一次；
+        2. **内容指纹**：最近一段对话与上次抽取过的完全相同则跳过
+           （例如用户连发同一句话、或历史还没更新）。
+        """
+        if not (self.config.long_term_enabled and self.config.memory.get("extract_facts", True)):
+            return False
+        if not history:
+            return False
+
+        now = time.time()
+        dialogue = "\n".join(history[-10:])
+        stamp = fingerprint(dialogue, length=16)
+
+        last_ts = self._last_fact_extract.get(session, 0.0)
+        if now - last_ts < FACT_EXTRACT_INTERVAL:
+            return False
+        if self._last_fact_fingerprint.get(session) == stamp:
+            return False
+
+        self._last_fact_extract[session] = now
+        self._last_fact_fingerprint[session] = stamp
+        # 顺手防止字典无限增长（长期运行的 Bot 会话会很多）
+        if len(self._last_fact_extract) > MAX_FACT_EXTRACT_SESSIONS:
+            cutoff = now - FACT_EXTRACT_INTERVAL * 10
+            for key, ts in list(self._last_fact_extract.items()):
+                if ts < cutoff:
+                    self._last_fact_extract.pop(key, None)
+                    self._last_fact_fingerprint.pop(key, None)
+        return True
 
     def _recall_for_prompt(self, session: str, query: str) -> list[str]:
         """检索本轮要注入的长期记忆。"""
@@ -535,7 +640,13 @@ class SuperAIPlugin(Star):
         from .tools.kb_tools import retrieve_kb
 
         try:
-            return await retrieve_kb(self.context, query, kb_names, top_k=top_k)
+            return await retrieve_kb(
+                self.context,
+                query,
+                kb_names,
+                top_k=top_k,
+                score_threshold=_as_float(self.config.knowledge_base.get("score_threshold"), 0.0),
+            )
         except Exception as exc:  # noqa: BLE001 - 知识库失败不应影响对话
             logger.debug(f"[SuperAI] 知识库自动检索失败：{exc}")
             return ""
@@ -784,12 +895,16 @@ class SuperAIPlugin(Star):
             use_agent=bool(tools),
         )
 
-        # 3) 记录用量（/ai 走的是我们自己的调用，不会触发 on_llm_response）
+        # 3) 记录用量（/ai 走的是我们自己的调用，不会触发 on_llm_response）。
+        #    必须带上真实 token：否则「按 token 计的日配额」在指令路径上形同虚设。
         if self.config.metrics_enabled:
             self.metrics.record(
                 session=session,
                 provider_id=outcome.provider_id,
                 route=tier,
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                cached_tokens=outcome.cached_tokens,
                 success=True,
             )
         return outcome.text
@@ -1072,7 +1187,7 @@ class SuperAIPlugin(Star):
             if not prompt.strip():
                 continue
 
-            provider_ids = self._workflow_candidates(route_tier, session)
+            provider_ids = await self._workflow_candidates(route_tier, session)
             try:
                 result = await self.agent.simple(
                     prompt,
@@ -1090,8 +1205,13 @@ class SuperAIPlugin(Star):
         self.workflows.record_run(workflow.name, success=True, detail=f"{len(outputs)} 步完成")
         return f"🔧 工作流「{workflow.name}」执行完成\n\n" + "\n\n".join(outputs)
 
-    def _workflow_candidates(self, route_tier: str, session: str) -> list[str]:
-        """给工作流步骤挑候选模型（指定档位 → 该档位 + 降级链）。"""
+    async def _workflow_candidates(self, route_tier: str, session: str) -> list[str]:
+        """给工作流步骤挑候选模型（指定档位 → 该档位 + 降级链 → 会话默认模型）。
+
+        最后一定要兜到「会话/全局默认模型」：档位一个都没配是很常见的情形
+        （用户只想要工作流、不想配路由），此时如果直接返回空列表，
+        工作流会以「没有可用的模型提供商」失败，而其实系统里有可用模型。
+        """
         provider_map = self.config.provider_map()
         candidates: list[str] = []
         tier = route_tier.strip().lower() if route_tier else ""
@@ -1103,11 +1223,19 @@ class SuperAIPlugin(Star):
             summary_provider,
             provider_map.get("strong", ""),
             provider_map.get("cheap", ""),
+            provider_map.get("reasoning", ""),
+            provider_map.get("long_context", ""),
         ):
             if pid and pid not in candidates:
                 candidates.append(pid)
+
+        available = self._available_provider_ids()
+        candidates = [pid for pid in candidates if not available or pid in available]
         if not candidates:
-            return []
+            # 兜底：用会话当前（或全局默认）模型，保证工作流仍可运行
+            fallback = await self._current_provider_id(session)
+            if fallback:
+                candidates.append(fallback)
         return candidates
 
     # ------------------------------------------------------------------
@@ -1151,74 +1279,102 @@ class SuperAIPlugin(Star):
         except Exception:  # noqa: BLE001
             days = 7
         days = max(1, min(90, days))
-        self.metrics.flush()
-        return json_response(self.metrics.summary(days))
+        try:
+            self.metrics.flush()
+            return json_response(self.metrics.summary(days))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] stats API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     async def api_memory(self):
         """GET /memory —— 查询会话记忆。"""
-        session = str(request.query.get("session", "") or "")
-        if not session:
-            return error_response("缺少 session 参数", status_code=400)
-        query = str(request.query.get("q", "") or "")
-        limit = max(1, min(100, _as_int(request.query.get("limit", 20), 20)))
-        entries = (
-            self.memory.search(session, query, top_k=limit)
-            if query
-            else self.memory.list(session, limit=limit)
-        )
-        summary = self.summaries.get(session)
-        return json_response(
-            {
-                "session": session,
-                "total": self.memory.count(session),
-                "summary": summary.summary,
-                "covered_rounds": summary.covered_rounds,
-                "entries": [entry.to_dict() for entry in entries],
-            }
-        )
+        try:
+            session = str(request.query.get("session", "") or "")
+            if not session:
+                return error_response("缺少 session 参数", status_code=400)
+            query = str(request.query.get("q", "") or "")
+            limit = max(1, min(100, _as_int(request.query.get("limit", 20), 20)))
+            entries = (
+                self.memory.search(session, query, top_k=limit)
+                if query
+                else self.memory.list(session, limit=limit)
+            )
+            summary = self.summaries.get(session)
+            return json_response(
+                {
+                    "session": session,
+                    "total": self.memory.count(session),
+                    "summary": summary.summary,
+                    "covered_rounds": summary.covered_rounds,
+                    "entries": [entry.to_dict() for entry in entries],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] memory API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     async def api_memory_clear(self):
         """POST /memory/clear —— 清空会话记忆。"""
-        payload = await request.json(default={})
-        if not isinstance(payload, dict):
-            return error_response("请求体应为 JSON 对象", status_code=400)
-        session = str(payload.get("session") or "")
-        if not session:
-            return error_response("缺少 session 字段", status_code=400)
-        removed = self.memory.clear(session)
-        self.summaries.clear(session)
-        return json_response({"removed": removed})
+        try:
+            payload = await request.json(default={})
+            if not isinstance(payload, dict):
+                return error_response("请求体应为 JSON 对象", status_code=400)
+            session = str(payload.get("session") or "")
+            if not session:
+                return error_response("缺少 session 字段", status_code=400)
+            removed = self.memory.clear(session)
+            self.summaries.clear(session)
+            return json_response({"removed": removed})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] memory clear API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     async def api_tools(self):
         """GET /tools —— 工具列表。"""
-        return json_response({"tools": self.tool_names})
+        try:
+            return json_response({"tools": self.tool_names})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] tools API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     async def api_workflows(self):
         """GET /workflows —— 工作流列表与最近运行记录。"""
-        workflows = self.workflows.load(self.config.workflow.get("workflows"))
-        return json_response(
-            {
-                "workflows": [wf.to_dict() for wf in workflows.values()],
-                "recent_runs": self.workflows.recent_runs(10),
-            }
-        )
+        try:
+            workflows = self.workflows.load(self.config.workflow.get("workflows"))
+            return json_response(
+                {
+                    "workflows": [wf.to_dict() for wf in workflows.values()],
+                    "recent_runs": self.workflows.recent_runs(10),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] workflows API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     async def api_sessions(self):
-        """GET /sessions —— 有记忆或摘要的会话列表。"""
-        sessions: dict[str, dict[str, Any]] = {}
-        for session in self.summaries.list_sessions():
-            sessions.setdefault(session, {})["has_summary"] = True
-        for session in self.memory.sessions():
-            sessions.setdefault(session, {})["has_memory"] = True
-        rows = [
-            {
-                "session": session,
-                "memories": self.memory.count(session),
-                "summary_chars": len(self.summaries.get(session).summary),
-            }
-            for session in sorted(sessions)
-        ]
-        return json_response({"sessions": rows})
+        """GET /sessions —— 有记忆或摘要的会话列表。
+
+        面板接口必须自己兜住异常：这里任何一个存储读取失败都会让前端
+        整个面板白屏，而 ``api_sessions`` 早前没有 try/except。
+        """
+        try:
+            sessions: dict[str, dict[str, Any]] = {}
+            for session in self.summaries.list_sessions():
+                sessions.setdefault(session, {})["has_summary"] = True
+            for session in self.memory.sessions():
+                sessions.setdefault(session, {})["has_memory"] = True
+            rows = [
+                {
+                    "session": session,
+                    "memories": self.memory.count(session),
+                    "summary_chars": len(self.summaries.get(session).summary),
+                }
+                for session in sorted(sessions)
+            ]
+            return json_response({"sessions": rows})
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[SuperAI] sessions API 失败：{exc}", exc_info=True)
+            return error_response(str(exc), status_code=500)
 
     # ------------------------------------------------------------------
     # 文本输出

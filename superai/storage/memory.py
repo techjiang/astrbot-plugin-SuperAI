@@ -47,6 +47,14 @@ class MemoryEntry:
     source: str = ""
     """来源标记，例如 uid:12345"""
 
+    decayed_at: int = 0
+    """上次衰减到的时间戳。
+
+    衰减必须基于「距上次衰减过了多久」而不是「距 last_hit 过了多久」，
+    否则每跑一次维护都会把同一个时间差再乘一遍，权重会指数级坍塌
+    （1 天前的记忆在 30 天半衰期下应当只衰减一次到 0.977，
+    实际却会在连续维护里一路滑到 0.91、0.89……直至被当成垃圾清掉）。"""
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -62,6 +70,7 @@ class MemoryEntry:
             created_at=int(data.get("created_at", 0) or 0),
             updated_at=int(data.get("updated_at", 0) or 0),
             source=str(data.get("source") or ""),
+            decayed_at=int(data.get("decayed_at", 0) or 0),
         )
 
 
@@ -185,7 +194,14 @@ class MemoryStore:
         return count
 
     # -- 检索 -------------------------------------------------------------
-    def search(self, session: str, query: str, *, top_k: int = 5) -> list[MemoryEntry]:
+    def search(
+        self,
+        session: str,
+        query: str,
+        *,
+        top_k: int = 5,
+        min_relevance: float = 0.0,
+    ) -> list[MemoryEntry]:
         """按相似度检索会话记忆。
 
         打分由两部分组成：
@@ -197,6 +213,12 @@ class MemoryStore:
         回落到「权重最高的若干条」——这很重要，否则用户说「帮我写一段文案」
         这种与历史偏好无关的请求，模型就完全拿不到「用户喜欢简洁的回答」这类
         背景信息，长期记忆等于白存。
+
+        参数:
+            min_relevance: 相关性门槛。低于它的记忆**连兜底都不会返回**。
+                用于「稳定偏好」这类永远应该带上、但从不命中查询的记忆：
+                它们通常通过 ``kind`` 而不是关键词命中，所以需要一个独立的
+                通道把它们捞出来，而不是靠 n-gram 碰运气。
         """
         entries = self._entries(session)
         if not entries:
@@ -232,9 +254,16 @@ class MemoryStore:
             scored.append((score, entry))
 
         if not scored:
-            # 没有任何相关性：回落到权重最高的记忆，保证模型仍拿得到背景
-            fallback = sorted(entries, key=lambda item: item.weight, reverse=True)
-            return fallback[:limit]
+            # 没有任何相关性：回落到「权重最高」的记忆，保证模型仍拿得到背景。
+            # 但这里必须把 preference 类的稳定偏好排在前面：它们与具体提问
+            # 天然不相关，如果只按 weight 排，一条临时事实很容易把
+            # 「用户喜欢简洁的回答」挤出去。
+            ranked = sorted(
+                entries,
+                key=lambda item: (item.kind == "preference", item.weight, item.updated_at),
+                reverse=True,
+            )
+            return ranked[:limit]
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
         limit = max(1, min(int(top_k or 5), 50))
@@ -319,25 +348,36 @@ class MemoryStore:
     def decay(self, *, half_life_days: float = 30.0) -> int:
         """按半衰期衰减权重，返回被淘汰的条数。
 
+        衰减量取决于「**距上次衰减**过了多久」，而不是「距上次命中过了多久」。
+        每次衰减后会把 ``decayed_at`` 推进到现在，所以衰减是可加（幂等）的：
+        维护循环跑多少次，结果都只与真实经过的时间有关，不会因为调用次数
+        不同而给出不同权重。
+
         未被命中且权重低于 0.2 的记忆会被删除。
         """
         data = self._all()
         now = int(time.time())
         removed = 0
         half_life = max(1.0, float(half_life_days)) * 86400
+        changed = False
         for session, bucket in list(data.items()):
             if not isinstance(bucket, list):
                 continue
             kept: list[dict[str, Any]] = []
             for item in bucket:
-                updated = int(item.get("updated_at", now) or now)
-                age = max(0, now - updated)
-                factor = 0.5 ** (age / half_life)
-                item["weight"] = round(float(item.get("weight", 1.0)) * factor, 4)
-                if item["weight"] < 0.2:
+                # 起点：上次衰减时间；从未衰减过则用最后更新时间
+                last = int(item.get("decayed_at") or item.get("updated_at", now) or now)
+                elapsed = now - last
+                if elapsed > 0:
+                    factor = 0.5 ** (elapsed / half_life)
+                    item["weight"] = round(float(item.get("weight", 1.0)) * factor, 4)
+                    item["decayed_at"] = now
+                    changed = True
+                if float(item.get("weight", 1.0)) < 0.2:
                     removed += 1
                     continue
                 kept.append(item)
             data[session] = kept
-        self._store.save("long_term")
+        if changed or removed:
+            self._store.save("long_term")
         return removed

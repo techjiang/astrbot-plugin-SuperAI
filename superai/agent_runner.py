@@ -33,6 +33,11 @@ class AgentOutcome:
     provider_id: str = ""
     attempts: int = 0
     errors: list[str] = field(default_factory=list)
+    input_tokens: int = 0
+    cached_tokens: int = 0
+    output_tokens: int = 0
+    """真实的 token 用量。原先 ``/ai`` 只记「1 次请求」而不记 token，
+    导致统计与配额（按 token 拦截）在指令路径上完全失真。"""
 
     @property
     def ok(self) -> bool:
@@ -81,8 +86,10 @@ class AgentExecutor:
         per_attempt_timeout = max(10.0, float(self.plugin.config.router.get("timeout") or 120))
 
         outcome = AgentOutcome()
+        usage_box: list[Any] = []
         for index, provider_id in enumerate(candidates, 1):
             outcome.attempts = index
+            usage_box.clear()
             try:
                 text = await asyncio.wait_for(
                     self._invoke(
@@ -94,6 +101,7 @@ class AgentExecutor:
                         tools=tools if use_agent else None,
                         max_steps=max_steps,
                         tool_timeout=tool_timeout,
+                        usage_box=usage_box,
                     ),
                     timeout=per_attempt_timeout,
                 )
@@ -120,6 +128,8 @@ class AgentExecutor:
             self.plugin.router.mark_success(provider_id)
             outcome.text = text
             outcome.provider_id = provider_id
+            if usage_box:
+                outcome.input_tokens, outcome.cached_tokens, outcome.output_tokens = usage_box[0]
             return outcome
 
         raise ProviderUnavailableError(
@@ -138,6 +148,7 @@ class AgentExecutor:
         tools: ToolSet | None,
         max_steps: int,
         tool_timeout: int,
+        usage_box: list[Any] | None = None,
     ) -> str:
         """真正发起一次 LLM 调用。"""
         context = self.plugin.context
@@ -159,6 +170,8 @@ class AgentExecutor:
                 image_urls=image_urls or None,
                 system_prompt=system_prompt or None,
             )
+        if usage_box is not None:
+            usage_box.append(_usage_tuple(resp))
         return _response_text(resp)
 
     async def simple(
@@ -217,6 +230,25 @@ def _toolset_empty(tools: Any) -> bool:
         except Exception:  # noqa: BLE001
             return False
     return False
+
+
+def _usage_tuple(resp: Any) -> tuple[int, int, int]:
+    """从 ``LLMResponse`` 里取出 ``(input_other, input_cached, output)``。
+
+    取不到时返回全 0；统计口径与 ``on_llm_response`` 保持一致 ——
+    ``input_other`` 不含缓存命中，必须单独累加 ``input_cached``。
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return (0, 0, 0)
+
+    def _pick(name: str) -> int:
+        try:
+            return max(0, int(getattr(usage, name, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    return (_pick("input_other"), _pick("input_cached"), _pick("output"))
 
 
 def _response_text(resp: Any) -> str:

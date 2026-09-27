@@ -10,7 +10,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.0-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.1-orange)](./metadata.yaml)
 
 </div>
 
@@ -216,6 +216,10 @@ python -m pytest tests
 > 真实框架的 `sys.path` 切换发生在 `conftest.py` 的 `pytest_configure`，
 > 目的是避免同一进程内混用 stub 与真实 AstrBot（会让 sqlmodel 重复注册表而报错）。
 
+`tests/test_llm_hook_contract.py` 专门守住「钩子调用约定」：它按 AstrBot 的方式
+（`await handler(event, req)`，不迭代）驱动钩子，并用 AST 检查钩子里没有 `yield`。
+这类 bug 的特点是**测试会绿、线上是死的**，所以必须单独设防。
+
 ## 与 AstrBot 的协作细节
 
 这些是实现时踩过坑、写进测试里固定下来的行为，升级 AstrBot 时值得复查：
@@ -234,6 +238,21 @@ python -m pytest tests
   取最近对话必须先算总页数。
 - **失败信号**：AstrBot 用 `LLMResponse.role == "err"` 表示本轮调用失败，
   SuperAI 据此统计失败数并给该 provider 记一次「不健康」。
+- **LLM 钩子必须是普通协程，不能是 async generator**：`call_event_hook()`
+  对 `OnLLMRequestEvent` / `OnLLMResponseEvent` 只做
+  `await handler.handler(event, req)`，**不会**像普通事件管线那样
+  `async for` 迭代生成器。钩子里只要有 `yield`，函数就变成 async generator，
+  `await` 它会直接抛 `TypeError: object async_generator can't be used in
+  'await' expression`，而异常会被 `call_event_hook` 吞掉只记一行 error ——
+  结果是**路由、记忆注入、图片保护、预算拦截全部静默失效**，而表面上看
+  插件「加载成功」。所以拦截提示必须用 `event.set_result(...)` +
+  `event.stop_event()`，而不是 `yield`。`tests/test_llm_hook_contract.py`
+  用 AST 扫源码把这个约束固定下来。
+- **`plain_result()` 只是「构造」结果**：它返回一个 `MessageEventResult`，
+  并不会挂到事件上。要让用户真的收到话术，必须 `event.set_result(...)`。
+- **衰减要与调用次数无关**：维护循环会周期性跑 `memory.decay()`，衰减量必须
+  按「距上次衰减的时间」计算，否则同一个时间差会被反复相乘，记忆权重会指数
+  坍塌。SuperAI 因此记录 `decayed_at`，让衰减是幂等的。
 
 ## 局限与已知问题
 
@@ -242,6 +261,8 @@ python -m pytest tests
   生产环境建议自建 SearXNG 并在配置中切换；
 - 事实抽取依赖模型输出合法 JSON，抽取失败会静默跳过（不影响对话），
   并且失败时会推进内部进度，避免每轮都重试；
+- 事实抽取默认有 180 秒节流：抽取要额外调一次模型，不节流的话每轮对话都会
+  烧一次钱；同一条对话内容也会被指纹去重，所以实际调用远少于轮数；
 - 记忆检索使用轻量 n-gram + 关键词相似度而非向量检索，以保持零重依赖；
   完全无相关时会回落到权重最高的若干条记忆（否则这些长期记忆等于白存）；
 - 知识库自动注入（`knowledge_base.auto_inject`）会增加每轮的一次检索开销，

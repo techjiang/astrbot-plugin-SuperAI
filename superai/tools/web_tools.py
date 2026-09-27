@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import html
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -279,8 +278,3 @@ def _extract_main_text(body: str) -> str:
     if buffer:
         merged.append(buffer)
     return "\n".join(merged)[:50000]
-
-
-def dumps(data: Any) -> str:
-    """调试用：稳定 JSON 序列化。"""
-    return json.dumps(data, ensure_ascii=False)

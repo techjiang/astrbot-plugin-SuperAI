@@ -10,6 +10,10 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.platform_metadata import PlatformMetadata
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,16 +72,44 @@ class FakeConversationManager:
         return self.history[-page_size:], self.pages
 
 
-class FakeEvent:
-    """最小 AstrMessageEvent 替身。"""
+class FakeEvent(AstrMessageEvent):
+    """真实 ``AstrMessageEvent`` 的最小可用子类。
 
-    def __init__(self, umo: str = "aiocqhttp:GroupMessage:1", *, is_admin: bool = False):
+    这里刻意**继承真实框架类**而不是手写一个鸭子类型替身：
+    ``event.set_result()`` / ``is_stopped()`` / ``plain_result()`` 的语义
+    （尤其是 ``stop_event()`` 只有在结果已挂到事件上时才真正生效）
+    直接决定钩子能否把话术发给用户。早前用手写替身时，
+    ``stop_event()`` 被简化成只置一个标志位，于是「预算拦截」看起来是通过的，
+    真实环境下却会静默失效。
+    """
+
+    def __init__(
+        self,
+        umo: str = "aiocqhttp:GroupMessage:1",
+        *,
+        is_admin: bool = False,
+        messages: list | None = None,
+    ):
+        message_obj = AstrBotMessage()
+        message_obj.type = (
+            MessageType.FRIEND_MESSAGE if "GroupMessage" not in umo else MessageType.GROUP_MESSAGE
+        )
+        message_obj.self_id = "bot"
+        message_obj.session_id = umo.rsplit(":", 1)[-1]
+        message_obj.message_id = "msg-1"
+        message_obj.message_str = ""
+        message_obj.raw_message = None
+        message_obj.message = list(messages or [])
+        message_obj.sender = MessageMember(user_id="user-1", nickname="tester")
+        super().__init__(
+            message_str="",
+            message_obj=message_obj,
+            platform_meta=PlatformMetadata(name="aiocqhttp", description="test", id="aiocqhttp"),
+            session_id=umo.rsplit(":", 1)[-1],
+        )
         self.unified_msg_origin = umo
-        self._extras: dict = {}
-        self.results: list = []
-        self.stopped = False
         self._is_admin = is_admin
-        self._messages: list = []
+        self.role = "admin" if is_admin else "member"
 
     def get_group_id(self):  # noqa: ANN201
         return self.unified_msg_origin.rsplit(":", 1)[-1]
@@ -89,19 +121,17 @@ class FakeEvent:
         return self._is_admin
 
     def get_messages(self):  # noqa: ANN201
-        return self._messages
+        return list(self.message_obj.message)
 
-    def get_extra(self, key, default=None):  # noqa: ANN001
-        return self._extras.get(key, default)
+    def get_sender_id(self) -> str:
+        return "user-1"
 
-    def set_extra(self, key, value) -> None:  # noqa: ANN001
-        self._extras[key] = value
-
-    def plain_result(self, text: str):  # noqa: ANN201
-        return ("plain", text)
-
-    def stop_event(self) -> None:
-        self.stopped = True
+    def result_text(self) -> str:
+        """取出本轮挂到事件上的全部纯文本（测试辅助）。"""
+        result = self.get_result()
+        if result is None:
+            return ""
+        return " ".join(str(getattr(component, "text", "")) for component in (result.chain or []))
 
 
 class _FakeClient:
@@ -229,6 +259,18 @@ def _make_plugin(tmp_path, monkeypatch, *, history=None, pages=1, **overrides):
     return plugin, context
 
 
+def _texts(results: list) -> list[str]:
+    """把指令处理函数 yield 出来的 ``MessageEventResult`` 渲染成文本列表。"""
+    out: list[str] = []
+    for item in results:
+        chain = getattr(item, "chain", None)
+        if chain is None:
+            out.append(str(item))
+            continue
+        out.append(" ".join(str(getattr(component, "text", "")) for component in chain))
+    return out
+
+
 def _make_request(prompt: str = "你好"):
     from astrbot.core.provider.entities import ProviderRequest
 
@@ -282,8 +324,7 @@ async def test_on_llm_request_injects_and_routes(tmp_path, monkeypatch):
     plugin.memory.add(event.unified_msg_origin, "用户喜欢简洁的回答")
     req = _make_request("帮我写一篇产品介绍")
 
-    async for _ in plugin.on_llm_request(event, req):
-        pass
+    await plugin.on_llm_request(event, req)
 
     # 稳定指令注入
     assert "SuperAI" in (req.system_prompt or "")
@@ -308,8 +349,7 @@ async def test_on_llm_request_keeps_images(tmp_path, monkeypatch):
     req = _make_request("看看这张图")
     req.image_urls = ["/tmp/cat.png"]
 
-    async for _ in plugin.on_llm_request(event, req):
-        pass
+    await plugin.on_llm_request(event, req)
 
     assert req.image_urls == ["/tmp/cat.png"], "插件必须保住图片，否则视觉请求会变成纯文本"
     assert (event.get_extra("superai_route") or {}).get("tier") == "vision" or True
@@ -324,9 +364,11 @@ async def test_on_llm_request_stops_when_over_budget(tmp_path, monkeypatch):
     event = FakeEvent()
     req = _make_request("你好")
 
-    results = [item async for item in plugin.on_llm_request(event, req)]
-    assert event.stopped
-    assert any("上限" in text for _, text in results)
+    await plugin.on_llm_request(event, req)
+    # 钩子是普通协程，结果必须通过 set_result 挂到事件上才能真的发给用户
+    assert event.get_result() is not None, "超预算时必须把话术挂到事件结果上"
+    assert "上限" in " ".join(c.text for c in event.get_result().chain)
+    assert event.is_stopped(), "超预算时必须终止事件，避免继续调用模型"
 
 
 @pytest.mark.asyncio
@@ -334,8 +376,7 @@ async def test_on_llm_request_skips_when_disabled(tmp_path, monkeypatch):
     plugin, _ = _make_plugin(tmp_path, monkeypatch, enabled=False)
     event = FakeEvent()
     req = _make_request("你好")
-    async for _ in plugin.on_llm_request(event, req):
-        pass
+    await plugin.on_llm_request(event, req)
     assert req.model is None
     assert not req.extra_user_content_parts
 
@@ -363,8 +404,7 @@ async def test_summary_uses_total_rounds(tmp_path, monkeypatch):
 
     for _ in range(3):
         req = _make_request("继续")
-        async for _ in plugin.on_llm_request(event, req):
-            pass
+        await plugin.on_llm_request(event, req)
 
     summary = plugin.summaries.get(session)
     assert summary.total_rounds >= 3
@@ -388,8 +428,7 @@ async def test_on_llm_response_records_usage(tmp_path, monkeypatch):
 
     # 先制造一个「请求开始」记录
     req = _make_request("你好")
-    async for _ in plugin.on_llm_request(event, req):
-        pass
+    await plugin.on_llm_request(event, req)
     await plugin.on_llm_response(event, resp)
 
     stats = plugin.metrics.today_stats()
@@ -428,8 +467,8 @@ async def test_ai_command_uses_fallback_chain(tmp_path, monkeypatch):
     event = FakeEvent()
 
     results = [item async for item in plugin.ai_command(event, "帮我写一段文案")]
-    assert results and results[0][0] == "plain"
-    assert "模型输出" in results[0][1]
+    assert results, "指令必须产出回复"
+    assert "模型输出" in _texts(results)[0]
     assert context.generate_calls[0] == "p-strong"
     assert "p-cheap" in context.generate_calls
 
@@ -440,7 +479,7 @@ async def test_ai_command_cooldown(tmp_path, monkeypatch):
     event = FakeEvent()
     assert [item async for item in plugin.ai_command(event, "第一句")]
     second = [item async for item in plugin.ai_command(event, "第二句")]
-    assert "太快" in second[0][1]
+    assert "太快" in _texts(second)[0]
 
 
 @pytest.mark.asyncio
@@ -448,7 +487,7 @@ async def test_ai_command_requires_text_or_image(tmp_path, monkeypatch):
     plugin, _ = _make_plugin(tmp_path, monkeypatch)
     event = FakeEvent()
     results = [item async for item in plugin.ai_command(event, "")]
-    assert "SuperAI 使用帮助" in results[0][1]
+    assert "SuperAI 使用帮助" in _texts(results)[0]
 
 
 @pytest.mark.asyncio
@@ -457,21 +496,21 @@ async def test_superai_stats_and_route(tmp_path, monkeypatch):
     event = FakeEvent()
     plugin.metrics.record(provider_id="p-cheap", route="cheap", input_tokens=10)
 
-    stats = [item async for item in plugin.superai_stats(event, 7)]
-    assert "用量统计" in stats[0][1]
-    assert "cheap" in stats[0][1]
+    stats = _texts([item async for item in plugin.superai_stats(event, 7)])
+    assert "用量统计" in stats[0]
+    assert "cheap" in stats[0]
 
-    route = [item async for item in plugin.superai_route(event, "")]
-    assert "SuperRouter" in route[0][1]
+    route = _texts([item async for item in plugin.superai_route(event, "")])
+    assert "SuperRouter" in route[0]
 
-    set_route = [item async for item in plugin.superai_route(event, "cheap")]
-    assert "cheap" in set_route[0][1]
+    set_route = _texts([item async for item in plugin.superai_route(event, "cheap")])
+    assert "cheap" in set_route[0]
 
-    bad = [item async for item in plugin.superai_route(event, "nope")]
-    assert "未知档位" in bad[0][1]
+    bad = _texts([item async for item in plugin.superai_route(event, "nope")])
+    assert "未知档位" in bad[0]
 
-    reset = [item async for item in plugin.superai_route(event, "auto")]
-    assert "自动路由" in reset[0][1]
+    reset = _texts([item async for item in plugin.superai_route(event, "auto")])
+    assert "自动路由" in reset[0]
 
 
 @pytest.mark.asyncio
@@ -481,31 +520,31 @@ async def test_memory_subcommands(tmp_path, monkeypatch):
     session = event.unified_msg_origin
     plugin.memory.add(session, "用户喜欢 Rust 语言")
 
-    listed = [item async for item in plugin.superai_memory_list(event, 10)]
-    assert "Rust" in listed[0][1]
+    listed = _texts([item async for item in plugin.superai_memory_list(event, 10)])
+    assert "Rust" in listed[0]
 
-    found = [item async for item in plugin.superai_memory_search(event, "Rust")]
-    assert "Rust" in found[0][1]
+    found = _texts([item async for item in plugin.superai_memory_search(event, "Rust")])
+    assert "Rust" in found[0]
 
-    stats = [item async for item in plugin.superai_memory_stats(event)]
-    assert "记忆总数" in stats[0][1]
+    stats = _texts([item async for item in plugin.superai_memory_stats(event)])
+    assert "记忆总数" in stats[0]
 
-    cleared = [item async for item in plugin.superai_memory_clear_cmd(event)]
-    assert "已清空" in cleared[0][1]
+    cleared = _texts([item async for item in plugin.superai_memory_clear_cmd(event)])
+    assert "已清空" in cleared[0]
     assert plugin.memory.count(session) == 0
 
     # 兼容旧写法
     plugin.memory.add(session, "用户喜欢 Rust 语言")
-    legacy = [item async for item in plugin.superai_memory(event, "search", "Rust")]
-    assert "Rust" in legacy[0][1]
+    legacy = _texts([item async for item in plugin.superai_memory(event, "search", "Rust")])
+    assert "Rust" in legacy[0]
 
 
 @pytest.mark.asyncio
 async def test_memory_clear_requires_admin(tmp_path, monkeypatch):
     plugin, _ = _make_plugin(tmp_path, monkeypatch)
     event = FakeEvent(is_admin=False)
-    results = [item async for item in plugin.superai_memory_clear_cmd(event)]
-    assert "管理员" in results[0][1]
+    results = _texts([item async for item in plugin.superai_memory_clear_cmd(event)])
+    assert "管理员" in results[0]
 
 
 # ---------------------------------------------------------------------------
@@ -597,3 +636,74 @@ async def test_terminate_cancels_background_tasks(tmp_path, monkeypatch):
     await plugin.terminate()
     assert not plugin._background_tasks
     assert plugin._maintenance_task is None
+
+
+# ---------------------------------------------------------------------------
+# Studio 面板：接口必须自己兜住异常
+# ---------------------------------------------------------------------------
+class _BrokenStore:
+    """模拟存储层异常（磁盘只读、JSON 损坏等）。"""
+
+    def stats(self):  # noqa: ANN201
+        raise RuntimeError("disk gone")
+
+    def count(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+    def sessions(self):  # noqa: ANN201
+        raise RuntimeError("disk gone")
+
+    def list(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+    def search(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+    def clear(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["api_status", "api_sessions"])
+async def test_studio_api_survives_memory_store_failure(tmp_path, monkeypatch, endpoint):
+    """回归：记忆存储报错时，面板接口必须返回 500，而不是把异常抛到 Web 层。
+
+    早前 ``api_sessions`` 完全没有兜底，一次磁盘异常就会让整个面板白屏。
+    """
+    plugin, _ = _make_plugin(tmp_path, monkeypatch)
+    plugin.memory = _BrokenStore()
+
+    response = await getattr(plugin, endpoint)()
+    assert response.status_code == 500, f"{endpoint} 必须自己兜住异常并返回 500"
+    assert b"disk gone" in response.body
+
+
+class _BrokenWorkflowStore:
+    def load(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+    def recent_runs(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        raise RuntimeError("disk gone")
+
+
+@pytest.mark.asyncio
+async def test_studio_workflows_api_survives_store_failure(tmp_path, monkeypatch):
+    plugin, _ = _make_plugin(tmp_path, monkeypatch)
+    plugin.workflows = _BrokenWorkflowStore()
+
+    response = await plugin.api_workflows()
+    assert response.status_code == 500
+    assert b"disk gone" in response.body
+
+
+@pytest.mark.asyncio
+async def test_studio_memory_api_survives_store_failure(tmp_path, monkeypatch):
+    from astrbot.api.web import bind_request_context
+
+    plugin, _ = _make_plugin(tmp_path, monkeypatch)
+    plugin.memory = _BrokenStore()
+
+    with bind_request_context(_make_plugin_request({"session": ["umo:1"]})):
+        response = await plugin.api_memory()
+    assert response.status_code == 500
+    assert b"disk gone" in response.body

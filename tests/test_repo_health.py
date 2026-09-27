@@ -6,7 +6,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,11 +124,35 @@ def test_pages_declared_have_matching_dirs():
         assert (directory / "index.html").is_file(), f"缺少 pages/{page['name']}/index.html"
 
 
-@pytest.mark.parametrize("name", ["logo.svg"])
-def test_studio_assets_are_valid_svg(name):
-    import xml.dom.minidom
+def test_studio_logo_is_a_transparent_png():
+    """Studio 面板与插件图标使用同一张无背景 Logo。
 
-    xml.dom.minidom.parseString((ROOT / "pages" / "studio" / name).read_text(encoding="utf-8"))
+    回归：面板此前用的是一张手绘 SVG，和 AstrBot 插件列表里的
+    ``logo.png`` 视觉不一致；现在两处共用同一份美术资源。
+    ``logo.png`` 必须带透明通道 —— 面板有深色主题，
+    不透明的白底图在深色背景上会非常刺眼。
+    """
+    from PIL import Image
+
+    # 插件图标：AstrBot 会读取仓库根目录的 logo.png
+    icon = Image.open(ROOT / "logo.png")
+    assert icon.format == "PNG"
+    assert icon.size == (1024, 1024), "插件图标应为 1024×1024"
+    assert icon.mode in {"RGBA", "LA", "P"}, "插件图标必须带透明通道（无背景）"
+    alpha = icon.convert("RGBA").getchannel("A")
+    assert alpha.getextrema()[0] == 0, "图片必须存在全透明像素，说明背景确实是透明的"
+
+    # 面板图标
+    panel_logo = ROOT / "pages" / "studio" / "logo.png"
+    assert panel_logo.is_file(), "Studio 面板需要有 logo.png"
+    panel = Image.open(panel_logo).convert("RGBA")
+    assert panel.getchannel("A").getextrema()[0] == 0, "面板 Logo 也必须无背景"
+
+
+def test_studio_index_references_existing_logo():
+    html = (ROOT / "pages" / "studio" / "index.html").read_text(encoding="utf-8")
+    assert 'src="./logo.png"' in html, "index.html 应引用 logo.png"
+    assert (ROOT / "pages" / "studio" / "logo.png").is_file()
 
 
 def test_no_runtime_imports_of_test_stubs():

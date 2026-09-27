@@ -2,6 +2,78 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.1
+
+这一版修的是**最要命的一类问题：插件看着装上了，实际什么都没做**。
+所有结论都在真实 AstrBot 4.28.1 上复现过，并配了回归测试。
+
+### 修复
+
+- **`on_llm_request` 被写成了 async generator，导致整个钩子从未执行（最严重）**。
+  AstrBot 的 `call_event_hook()` 对 LLM 钩子只做 `await handler.handler(event, req)`，
+  并不像普通事件管线那样 `async for` 迭代生成器。原实现在钩子里用
+  `yield event.plain_result(...)` 返回超预算提示，于是函数变成 async generator，
+  `await` 它直接抛 `TypeError: object async_generator can't be used in 'await' expression`。
+  更糟的是 `call_event_hook()` 会把这个异常吞掉、只记一行 error，所以表现为
+  **路由、记忆注入、图片保护、预算拦截全部静默失效**，而插件「加载成功」、
+  测试也全绿（旧测试用 `async for` 驱动钩子，刚好把错误喂进了测试）。
+  现在钩子改回普通协程，拦截提示走 `set_result` + `stop_event`，
+  并新增 `tests/test_llm_hook_contract.py`：按 AstrBot 的方式 await 钩子，
+  并用 AST 扫源码确保里面不再出现 `yield`。
+- **超预算提示根本发不出去**：`event.plain_result()` 只是「构造」一个
+  `MessageEventResult`，不会挂到事件上。必须 `event.set_result(...)` 才会真正发给用户，
+  同时 `stop_event()` 也只有在结果已挂上时才会把 `result_type` 置为 STOP。
+  现在两者都补上了。
+- **`enabled_tasks` 完全没生效**：WebUI 里让用户勾选「接管哪些任务类型」，
+  配置读进来了但没有任何代码消费它，等于勾选无效。现在钩子入口会先判断任务类型
+  （`chat` / `agent` / `long_context` / `image`），未勾选的类型完全不动请求。
+  同时把 `image` 加进默认列表 —— 否则「有图片就走视觉档」默认就是关闭的，
+  用户很难从「任务白名单」联想到这一点。
+- **事实抽取每轮都调一次模型**：`extract_facts` 原先没有任何节流，5 轮对话就是
+  5 次额外的模型调用（摘要另算）。现在加了 180 秒时间节流 + 对话内容指纹去重，
+  6 轮对话的额外调用从 6 次降到 2 次。
+- **摘要触发条件依赖「历史是否读得到」**：轮数原先只在成功读到历史后才累加，
+  会话刚建立或 DB 抖动时轮数永远不涨，摘要永远不触发。现在先累加轮数再读历史。
+- **记忆衰减会随维护次数指数坍塌**：`decay()` 用 `now - updated_at` 当衰减区间，
+  而 `updated_at` 在衰减时不会推进 —— 每跑一次维护就把同一个时间差再乘一遍。
+  一条 1 天前、半衰期 30 天的记忆，本该只衰减一次到 0.977，实际会在连续维护中
+  一路滑到 0.91、0.89……直至被当垃圾清掉。现在记录 `decayed_at`，衰减按
+  「距上次衰减的时间」计算，**幂等**，与调用次数无关。
+- **Studio 面板接口会把异常抛到 Web 层**：`api_sessions` 完全没有兜底，
+  一次磁盘异常就让整个面板白屏；`api_memory` / `api_memory_clear` /
+  `api_workflows` / `api_tools` / `api_stats` 也缺 try/except。现在统一返回
+  500 + 错误信息，前端能优雅提示。
+- **工作流在没有配置档位模型时直接失败**：`_workflow_candidates()` 只从档位配置里
+  取模型，一个都没配就返回空列表，`run_workflow` 随即抛
+  「没有可用的模型提供商」—— 而系统里明明有会话默认模型可用。
+  现在会兜底到会话/全局默认模型，并过滤掉当前未加载的 provider。
+- **`/ai` 指令的用量统计不记 token**：指令路径自己发起 LLM 调用、不经过
+  `on_llm_response`，原实现只记「1 次请求」而不记 token，
+  导致「按 token 计的每日配额」在指令路径上形同虚设。现在从
+  `LLMResponse.usage` 取真实的输入 / 缓存命中 / 输出 token。
+- **`JsonStore` 会把 key 拼进文件名**：`router.json` + key `router_health`
+  会生成 `router_router_health.json`，难读且容易被下游当成新文件。
+  现在一个 `JsonStore` 对应一个文件，key 只作为文件内的分区。
+- **`logo.png` 带白色背景**：不透明白底在 Studio 面板的深色主题上非常刺眼。
+  已替换为设计师提供的**无背景**版本，并重新编码（去白边、裁掉空白边距、
+  补回透明像素的抗锯齿颜色），插件图标与 Studio 面板共用同一份资源。
+
+### 变更
+
+- 配置项与代码一一对应：删除从未被读取的 `agent.stream`（流式由 AstrBot 主流程控制），
+  移除 `router.needs_web()` / `ConfigStore.int_option()` / `relative_tier()` /
+  `describe_tools()` / `PlaceholderTool` / `task_group()` / `dumps()` 等
+  无人调用的死代码。
+- `knowledge_base.score_threshold` 真正生效：低于相关度门槛的片段不再进上下文。
+- `router.needs_web()` 真正生效：问到时效性问题且联网工具可用时，
+  注入 `<web_search_hint>` 建议模型主动检索。
+- `enabled_tasks` 默认值补上 `image`（同步更新 `_conf_schema.json`）。
+- Studio 面板改用 `pages/studio/logo.png`（与插件图标同源），移除手绘 `logo.svg`。
+- `requirements-dev.txt` 增加 `Pillow`（测试需要校验 Logo 的透明通道），
+  并给 CI 依赖自检加上 `PIL -> pillow` 的包名映射。
+- 测试从 106 项增至 **121 项**，新增钩子契约、Studio 容错、记忆衰减幂等、
+  Logo 透明通道等回归用例。
+
 ## v0.2.0
 
 一次以「修 Bug + 补强」为主的版本。下面每条都对应仓库里真实存在的问题

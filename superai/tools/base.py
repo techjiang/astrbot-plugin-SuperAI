@@ -7,7 +7,7 @@ SuperAI 的工具需要访问 AstrBot 上下文、配置、记忆库等对象。
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api import logger
@@ -77,17 +77,3 @@ class SuperAITool(FunctionTool[AstrAgentContext]):
         self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
     ) -> ToolExecResult:  # pragma: no cover - 抽象
         raise NotImplementedError
-
-
-@dataclass
-class PlaceholderTool(SuperAITool):
-    """占位工具，用于在不具备依赖时保持工具集结构稳定。"""
-
-    name: str = "placeholder"
-    description: str = "占位工具，不应被调用。"
-    parameters: dict = field(default_factory=lambda: {"type": "object", "properties": {}})
-
-    async def run_tool(
-        self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
-    ) -> ToolExecResult:
-        return "该能力当前不可用。"

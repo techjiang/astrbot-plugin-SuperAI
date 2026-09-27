@@ -20,6 +20,7 @@ async def retrieve_kb(
     kb_names: list[str],
     *,
     top_k: int = 5,
+    score_threshold: float = 0.0,
 ) -> str:
     """调用 AstrBot 的 KB 接口，把结果整理成可直接喂给模型的文本。
 
@@ -49,6 +50,13 @@ async def retrieve_kb(
         lines: list[str] = []
         for index, item in enumerate(results, 1):
             if not isinstance(item, dict):
+                continue
+            try:
+                score = float(item.get("score") or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+            # 相关度门槛：低于门槛的片段不进上下文，避免用噪声把提示词撑大
+            if score_threshold > 0 and score < score_threshold:
                 continue
             content = truncate(normalize_space(item.get("content")), 500, suffix="")
             if not content:

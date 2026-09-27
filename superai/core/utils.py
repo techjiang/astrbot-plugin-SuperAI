@@ -8,7 +8,6 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -121,6 +120,14 @@ def as_bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
+def as_float(value: Any, default: float = 0.0) -> float:
+    """把任意配置值安全地转成 float（WebUI 里可能是空串或数字字符串）。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def as_list(value: Any) -> list[str]:
     """把配置项安全地读成字符串列表（兼容 ``"a,b"`` 形式的字符串）。"""
     if value is None:
@@ -185,23 +192,3 @@ def extract_json(text: str) -> Any:
             except json.JSONDecodeError:
                 continue
     raise ValueError("模型输出中未找到合法 JSON")
-
-
-@asynccontextmanager
-async def task_group():
-    """创建后台任务并在退出时统一回收，避免「task was destroyed」告警。"""
-    tasks: set[asyncio.Task] = set()
-
-    def spawn(coro: Awaitable[Any]) -> asyncio.Task:
-        task = asyncio.ensure_future(coro)
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-        return task
-
-    try:
-        yield spawn
-    finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
