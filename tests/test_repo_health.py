@@ -139,7 +139,9 @@ def test_studio_logo_is_a_transparent_png():
     # 插件图标：AstrBot 会读取仓库根目录的 logo.png
     icon = Image.open(ROOT / "logo.png")
     assert icon.format == "PNG"
-    assert icon.size == (1024, 1024), "插件图标应为 1024×1024"
+    # 尺寸跟随 LOGO_MAX_SIDE / PANEL_LOGO_MAX_SIDE（见 test_logo_and_metadata.py）：
+    # 图标只需保证列表里清晰，过大的位图会显著拖慢市场详情页的加载
+    assert max(icon.size) <= 512, f"插件图标过大：{icon.size}"
     assert icon.mode in {"RGBA", "LA", "P"}, "插件图标必须带透明通道（无背景）"
     alpha = icon.convert("RGBA").getchannel("A")
     assert alpha.getextrema()[0] == 0, "图片必须存在全透明像素，说明背景确实是透明的"
@@ -426,3 +428,38 @@ def test_build_script_is_git_driven():
     script = (ROOT / "scripts" / "build_plugin_zip.sh").read_text(encoding="utf-8")
     assert "git ls-files" in script, "打包脚本必须按 git 跟踪文件收集"
     assert "禁止内容" in script or "forbidden" in script, "打包脚本必须自带泄漏自检"
+
+
+def test_no_runtime_module_on_disk_is_missing_from_the_package(package_entries):
+    """仓库里存在的运行时模块，一个都不能漏进发布包。
+
+    回归：``scripts/build_plugin_zip.sh`` 改为「按 ``git ls-files`` 收集」之后
+    多了一个新的坑 —— **新增文件忘了 ``git add``，打出来的包不报错，只是少一个
+    模块**。（本次 ``superai/assets.py`` 第一次打包时就是 38 项而不是 39 项，
+    用户装上后会 `ModuleNotFoundError: No module named 'superai.assets'`。）
+
+    这里刻意**不看 git 索引**，直接扫磁盘：索引里的文件当然会被打包，
+    能漏的只有「磁盘上有、索引里没有」的那些 —— 那正是要拦的东西。
+    """
+    entries = set(package_entries)
+
+    on_disk = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "superai").rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+    on_disk += sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / ".astrbot-plugin").rglob("*.json")
+        if "__pycache__" not in path.parts
+    )
+
+    # 逐个对照前先做一次 sanity check：磁盘上的模块数不该少于索引里的
+    assert len(on_disk) >= 25, f"扫描到的运行时模块过少（{len(on_disk)}），断言可能失效"
+
+    missing = [path for path in on_disk if f"astrbot_plugin_superai/{path}" not in entries]
+    assert not missing, (
+        "这些运行时模块在仓库里存在，却没有被打进发布包 —— "
+        "最常见的原因是新增文件忘了 git add（打包脚本按 git 索引收集）。"
+        f"缺失：{missing}"
+    )

@@ -49,6 +49,18 @@ LOGO_FNAME = "logo.png"
 #: 面板图标是同一份美术资源的缩放版，尺寸应明显小于插件图标。
 PANEL_LOGO_MAX_SIDE = 256
 
+#: 插件图标（``logo.png``）的边长上限。
+#:
+#: 图标在插件列表 / 商店卡片里只显示几十像素，
+#: 而**商店详情页会直接把这个文件整份下载下来**。
+#: 1024×1024 的 RGBA 位图未压缩数据是 4 MB，PNG 编码后仍有 600 KB 左右
+#: —— 弱网或移动端上表现为「图片区域一直空着、转圈」。
+LOGO_MAX_SIDE = 512
+
+#: 插件图标文件的体积上限（KB）。512×512 量化 PNG 约 45 KB，
+#: 这里留出宽裕余量，只拦截「明显没优化过」的文件。
+LOGO_MAX_BYTES = 256 * 1024
+
 #: 插件元数据（``metadata.yaml``）—— 发布信息与作者信息的**唯一来源**。
 METADATA_PATH = ROOT / "metadata.yaml"
 
@@ -156,14 +168,23 @@ def test_logo_png_structure_is_complete():
 
 
 def test_logo_is_decodable_square_and_high_resolution():
-    """图标要能被真正解码；正方形；分辨率够高（商店卡片会放大显示）。"""
+    """图标要能被真正解码；正方形；分辨率够清晰，但也不能大到拖慢加载。
+
+    回归（Issue #1「Logo 图标不显示」）：这里原本断言 ``>= 256`` 且**没有上限**，
+    于是 1024×1024 的位图被判为「越大越好」。实际影响是商店详情页每次都要
+    下载整份 600 KB 文件 —— 图标只显示几十像素，真实症状是「图标一直不显示」。
+    """
     from PIL import Image
 
     with Image.open(ROOT / LOGO_FNAME) as icon:
         width, height = icon.size
         assert icon.format == "PNG"
         assert width == height, f"图标应为正方形，实际 {width}×{height}"
-        assert width >= 256, f"图标分辨率过低（{width}×{height}），商店卡片会糊"
+        assert width >= 128, f"图标分辨率过低（{width}×{height}），列表里会糊"
+        assert width <= LOGO_MAX_SIDE, (
+            f"图标 {width}×{height} 过大 —— 列表里只显示几十像素，"
+            f"过大的位图只会拖慢商店详情页与 WebUI 的加载（建议 ≤ {LOGO_MAX_SIDE}）"
+        )
 
 
 def test_logo_background_is_actually_transparent():
@@ -187,11 +208,16 @@ def test_logo_background_is_actually_transparent():
 
 
 def test_logo_file_size_is_reasonable():
-    """不能小到像占位图，也不能大到拖累仓库与商店上传。"""
+    """不能小到像占位图，也不能大到拖累仓库与商店上传。
+
+    上限从「4 MB」（等于不设防）收紧到 256 KB：图标是会被**整份下载**的资源，
+    体积直接决定弱网下「图标能不能及时显示」。
+    """
     size = (ROOT / LOGO_FNAME).stat().st_size
     assert size > 4096, "图标过小，可能是占位图或损坏文件"
-    assert size < 4 * 1024 * 1024, (
-        f"图标 {size / 1024 / 1024:.2f} MB，过大，建议压缩后提交（商店卡片用不到这个体积）"
+    assert size <= LOGO_MAX_BYTES, (
+        f"图标 {size / 1024:.0f} KB 过大（上限 {LOGO_MAX_BYTES // 1024} KB）—— "
+        "图标只需在列表里清晰，过大只会让用户等图片加载"
     )
 
 
@@ -229,6 +255,38 @@ def test_studio_index_references_an_existing_logo():
     html = (ROOT / "pages" / "studio" / "index.html").read_text(encoding="utf-8")
     assert 'src="./logo.png"' in html, "Studio 页面应引用 ./logo.png"
     assert (ROOT / "pages" / "studio" / "logo.png").is_file(), "页面引用的文件必须存在"
+
+
+def test_logo_carries_full_opacity_edges_so_it_renders_on_any_theme():
+    """图标必须**自带完整的不透明边缘**，换任何背景都不依赖底图的颜色。
+
+    透明 PNG 在解码后是「预乘 alpha」的，边缘半透明像素会与背景混合。
+    只要美术资源本身留有亮色 / 白色边缘，深色背景上就会出现白毛刺；
+    反之全透明像素里若残留杂色，浅色背景上也会渗色。
+    这里用「贴到白底与深色底再比较」的方式，把这类问题变成可测的断言。
+    """
+    from PIL import Image
+
+    with Image.open(ROOT / LOGO_FNAME) as icon:
+        rgba = icon.convert("RGBA")
+
+    assert rgba.getchannel("A").getextrema()[1] > 16, "图标内容为空"
+
+    # 全透明像素的 RGB 必须是 0（否则缩放/解码时可能渗出杂色）
+    assert rgba.convert("RGB").getbbox() == rgba.getbbox(), (
+        "全透明像素残留了 RGB 值（在只按颜色统计的边界上多出一圈），"
+        "缩放或解码时会在浅色背景上渗出杂色"
+    )
+
+    def _flatten(background: tuple[int, int, int]) -> Image.Image:
+        canvas = Image.new("RGBA", rgba.size, (*background, 255))
+        canvas.alpha_composite(rgba)
+        return canvas.convert("RGB")
+
+    for background in ((255, 255, 255), (24, 24, 27)):
+        flattened = _flatten(background)
+        colors = len(flattened.getcolors(maxcolors=1 << 20) or [])
+        assert colors > 64, f"图标在背景 {background} 上几乎不可见（颜色数 {colors}）"
 
 
 def test_install_docs_explain_logo_placement():

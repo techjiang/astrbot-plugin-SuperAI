@@ -59,6 +59,7 @@ from astrbot.api.web import error_response, json_response, request
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from superai.agent_runner import AgentExecutor
+from superai.assets import format_logo_report, inspect_logo
 from superai.core.config import _as_bool, _as_float, _as_int, build_config
 from superai.core.errors import ProviderUnavailableError, SuperAIError
 from superai.core.metrics import MetricsCollector
@@ -194,6 +195,7 @@ class SuperAIPlugin(Star):
             logger.debug(f"[SuperAI] 清理历史统计数据失败：{exc}")
 
         self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+        self._report_asset_health()
         logger.info(
             f"[SuperAI] v{__version__} 已加载 | 路由={'开' if self.config.router_enabled else '关'} "
             f"记忆={'开' if self.config.memory_enabled else '关'} "
@@ -202,6 +204,26 @@ class SuperAIPlugin(Star):
             f"Agent={'开' if self.config.agent_enabled else '关'} "
             f"工具={len(self.tool_names)} 个"
         )
+
+    def _report_asset_health(self) -> None:
+        """启动时自检图标等静态资源，并把结论写进日志。
+
+        图标链路的共同点是**没有任何反馈**：框架找不到 ``logo.png`` 会静默
+        回落到默认图标，商店详情页也不会告诉你「图片太大所以一直加载不出来」。
+        用户能看到的只是「图标不显示」，而维护者从日志里查不到任何线索。
+
+        这里把检查结果写进启动日志：正常时一行 info，异常时逐条列出症状 /
+        原因 / 修复方向。检查本身不抛异常 —— 图标坏了不该影响插件工作。
+        """
+        try:
+            level, message = format_logo_report(inspect_logo())
+        except Exception as exc:  # noqa: BLE001 - 自检失败不影响插件功能
+            logger.debug(f"[SuperAI] 图标自检未能完成：{exc}")
+            return
+        if level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
 
     async def terminate(self) -> None:
         """插件卸载 / 停用时清理资源。"""

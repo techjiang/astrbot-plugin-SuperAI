@@ -31,7 +31,11 @@
 
 2. **版本与元数据**
    - [ ] `superai/version.py` 与 `metadata.yaml` 的版本号一致且已递增；
-   - [ ] `metadata.yaml` 的 `desc` / `short_desc` 是否仍需更新。
+   - [ ] `metadata.yaml` 的 `desc` / `short_desc` 是否仍需更新；
+   - [ ] 图标没有被换成超大位图（`logo.png` ≤ 512×512 / 256 KB）——
+         商店详情页会整份下载它，用户那边的症状是「图标一直不显示」。
+         跑 `python -m pytest tests/test_asset_health.py` 或看启动日志里的
+         `图标自检` 一行即可确认。
 
 3. **文档**
    - [ ] `CHANGELOG.md` 增加新版本段落，按 `修复 / 增强 / 变更 / 安全` 分类；
@@ -100,4 +104,4 @@ bash scripts/sync_github.sh             # 需要 GITHUB_TOKEN
 
 ---
 
-**最后核对**：`v0.2.8`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.9`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）

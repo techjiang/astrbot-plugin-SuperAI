@@ -46,11 +46,13 @@ git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plu
 
 1. **插件列表**：出现 `SuperAI`，且**图标是项目 Logo**（不是默认灰图标）。
 
-   图标由 AstrBot 的 `PluginManager._get_plugin_logo()` 提供 ——
-   它在**插件目录根下**按固定顺序找文件：
+   图标路径由 AstrBot 写死，**只有一个文件名**（`star_manager.py`）：
 
-   ```
-   logo.png  >  logo.jpg  >  logo.jpeg  >  logo.webp  >  logo.svg
+   ```python
+   self.logo_fname = "logo.png"  # 没有后缀回落列表
+   logo_path = os.path.join(plugin_dir_path, self.logo_fname)
+   if os.path.exists(logo_path):  # 只探测一次
+       metadata.logo_path = logo_path
    ```
 
    找不到就回落到默认图标，**不会打任何日志**。所以「插件列表里图标不对」
@@ -58,13 +60,33 @@ git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plu
 
    | 现象 | 原因 |
    | --- | --- |
-   | 显示默认图标 | `logo.png` 不在插件目录**根**下（被套进了子目录） |
-   | 显示默认图标 | 文件被改名（如 `Logo.PNG`、`icon.png`） |
-   | 破图 / 空白 | 文件名是 `logo.png`，内容却是 SVG / JPEG（改了扩展名） |
-   | 边缘有白毛刺 | 用了白底图而不是透明背景图 |
+   | 显示默认图标 | `logo.png` 不在插件目录**根**下（被套进了子目录 / 改了名） |
+   | — | 一句话：图标必须直接放在**插件目录根下**，且文件名就是 `logo.png` |
+   | 破图 / 空白 | 文件名是 `logo.png`，内容却是 SVG / JPEG（改了扩展名），或文件被截断 |
+   | **一直没加载出来 / 空着** | 图标文件过大，弱网或移动端下载不动 |
+   | 深色主题下是一块白斑 | 用了白底图而不是透明背景图 |
+   | 被拉伸变形 | 图标不是正方形 |
 
-   本项目对上述每一条都有测试守住（`tests/test_logo_and_metadata.py`），
-   改图片后跑一次 `python -m pytest tests/test_logo_and_metadata.py` 即可。
+   插件启动时会**自检图标并把结论写进日志**，正常是一行：
+
+   ```
+   [SuperAI] 图标自检通过 | .../logo.png 512×512 44 KB
+   ```
+
+   有问题则是逐条 `warning`，直接给出症状 / 原因 / 修复：
+
+   ```
+   [SuperAI] 图标自检发现问题（不影响插件功能，但用户会看到异常）：
+     1. 症状：弱网 / 移动端上图标长时间不显示（一直转圈）
+        原因：图标 1024×1024、565 KB 过大；商店详情页会把这个文件整份下载下来…
+        修复：缩到 512×512 并压缩（推荐 256 色 PNG）
+   ```
+
+   日志里搜 `图标自检` 即可。改图片后也可以直接跑单项检查：
+
+   ```bash
+   python -m pytest tests/test_asset_health.py tests/test_logo_and_metadata.py
+   ```
 
 2. **日志**：出现 `[SuperAI] vX.Y.Z 已加载 | 路由=开 记忆=开 ...`，
    且**没有**下面这类行：
@@ -176,4 +198,4 @@ git pull
 
 ---
 
-**最后核对**：`v0.2.8`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）
+**最后核对**：`v0.2.9`（逐条对照 `installation` / 发布要求与测试断言，无凭空描述）

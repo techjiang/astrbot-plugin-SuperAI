@@ -24,6 +24,12 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 ASTRBOT_REF = Path(os.environ.get("ASTRBOT_REF", "/tmp/astrbot-ref"))
 
+# 让 ``superai`` 可导入（插件入口本来就会把它加进 sys.path，这里提前做，便于复用自检逻辑）
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from superai.assets import LOGO_MAX_BYTES, LOGO_MAX_SIDE, inspect_logo  # noqa: E402
+
 
 def _fail(msg: str) -> None:
     print(f"❌ {msg}")
@@ -380,6 +386,26 @@ def _check_logo_and_metadata(module) -> None:
             icon.format == "PNG" and icon.mode in {"RGBA", "LA", "P"},
             f"{icon.format} {icon.size} {icon.mode}",
         )
+        # 「图标不显示」的另一种成因：文件太大，商店详情页整份下载时一直转圈。
+        # 列表里只显示几十像素，512×512 足够。
+        _check(
+            "图标尺寸适合列表 / 商店展示（过大在弱网下会一直加载不出来）",
+            max(icon.size) <= LOGO_MAX_SIDE,
+            f"{icon.size}，上限 {LOGO_MAX_SIDE}",
+        )
+
+    _check(
+        "图标体积适合网络加载",
+        resolved.stat().st_size <= LOGO_MAX_BYTES,
+        f"{resolved.stat().st_size / 1024:.0f} KB，上限 {LOGO_MAX_BYTES // 1024} KB",
+    )
+
+    report = inspect_logo(PLUGIN_ROOT)
+    _check(
+        "插件自带的图标自检在真实仓库上通过",
+        bool(report["ok"]),
+        str(report.get("problems") or "无问题"),
+    )
 
     # metadata.yaml → StarMetadata 的关键字段（市场卡片直接读这些）
     import yaml
