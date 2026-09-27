@@ -56,23 +56,45 @@ if os.path.exists(logo_path):  # 第 1376 行
     metadata.logo_path = logo_path
 ```
 
-注意三件事：
+注意四件事：
 
-1. **只有一个文件名**。换成 `logo.svg` / `logo.jpg` 不会被识别 ——
-   文件夹里放着也没用，框架根本不看。
+1. **只有一个文件名**。没有 `.png > .jpg > .svg` 的回落列表 ——
+   换成 `logo.svg` / `logo.jpg` 不会被识别，文件夹里放着也没用。
+   （这条曾经被文档写错成「按顺序找 5 个后缀」，现在由
+   `tests/test_asset_health.py::test_framework_has_no_fallback_logo_names`
+   对着真实框架源码断言。）
 2. **只做一次 `os.path.exists`**。找不到就回落到默认图标，
-   **一行日志都不打**，所以「图标没显示」查日志查不出任何东西。
-3. **必须是真 PNG**。把 SVG / JPEG 改扩展名成 `logo.png`，
-   框架照文件名交出去，浏览器解码失败就是一个破图。
+   **一行日志都不打**，所以「图标没显示」查日志查不出任何东西 ——
+   这正是插件要自己做启动自检的原因（见下）。
+3. **必须是真 PNG 且完整**。把 SVG / JPEG 改扩展名成 `logo.png`，
+   框架照文件名交出去，浏览器解码失败就是一个破图；被截断的 PNG 同理。
+4. **体积就是加载速度**。商店详情页会把 `logo.png` **整份下载**，
+   而它在列表里只显示几十像素。1024×1024 的 RGBA 位图未压缩是 4 MB、
+   PNG 编码后约 600 KB —— 弱网 / 移动端上用户的感受就是
+   「图标一直不显示」。项目约定 ≤ 512×512 / 256 KB。
 
-WebUI 那一侧是另一条链路：`PluginService.resolve_plugin_logo_url()`
-把 `logo_path` 注册成临时 token，前端再请求 `/api/file/<token>`。
+WebUI 那一侧是另一条链路：`PluginService.get_plugin_logo()` 把
+`logo_path` 注册成临时 token，前端再请求 `/api/file/<token>`。
 所以「插件列表图标」与 `pages/studio/logo.png`（静态路由）互不影响，
 两条都要各自保证是有效 PNG。
 
-（`tests/test_logo_and_metadata.py`：位置/文件名/大小写/真实格式/PNG 结构/
-分辨率/透明背景/多余变体，共 12 项；`scripts/e2e_smoke.py` 用框架真实的
-`logo_fname` 复刻查找过程）
+#### 运行时自检：把「静默失效」变成日志
+
+因为上面 4 条全都**没有反馈**，插件启动时会调用
+`superai/assets.py::inspect_logo()` 自检并写日志：
+
+- 正常：`[SuperAI] 图标自检通过 | <路径> 512×512 44 KB`
+- 异常：`warning` + 每条问题的**症状 / 原因 / 修复**
+
+约束：自检**只读、只尽力而为**，任何异常都吞掉 —— 图标坏了不能影响插件功能。
+它同样不依赖 Pillow（运行时只有 AstrBot 内置依赖），自己解析 PNG 的
+`IHDR` / `tRNS` / `IEND` 块。
+
+（`tests/test_asset_health.py`：17 项，覆盖缺图标 / 放错目录 / 改名 /
+JPEG 冒充 PNG / 文件截断 / 大位图 / 白底 / 非正方形 / 面板图标缺失与过大 /
+报告必须带「症状+原因+修复」/ 自检不得抛异常；`tests/test_logo_and_metadata.py`
+12 项守住仓库静态资源本身；`scripts/e2e_smoke.py` 用框架真实的 `logo_fname`
+复刻查找过程并校验尺寸与体积）
 
 ### `metadata.yaml` 的 `author` 是商店卡片的「作者」
 
@@ -245,4 +267,4 @@ SuperAI 记录 `decayed_at`，让衰减幂等。
 
 ---
 
-**最后核对**：`v0.2.8`（逐条对照 `tests/` 与测试断言，无凭空描述）
+**最后核对**：`v0.2.9`（逐条对照 `tests/` 与测试断言，无凭空描述）

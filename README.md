@@ -10,7 +10,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.8-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.9-orange)](./metadata.yaml)
 [![Docs](https://img.shields.io/badge/docs-%E4%B8%AD%E6%96%87-blue)](./docs/README.md)
 
 [文档](./docs/README.md) ·
