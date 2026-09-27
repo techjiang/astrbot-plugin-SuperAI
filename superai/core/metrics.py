@@ -12,12 +12,15 @@ SuperAI 会在每次 LLM 调用后记录 token 用量与耗时，用于：
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
+
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 @dataclass(slots=True)
@@ -44,8 +47,17 @@ class TokenUsageRecord:
     error: str = ""
 
     @property
+    def input_total(self) -> int:
+        """输入 token 总量（含命中缓存的部分）。
+
+        provider 上报的 ``input_other`` 是**不含**缓存命中的输入量，
+        ``input_cached`` 才是命中部分；两者相加才是真实的输入规模。
+        """
+        return self.input_tokens + self.cached_tokens
+
+    @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return self.input_total + self.output_tokens
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,8 +79,13 @@ class DailyStats:
     last_records: list[dict[str, Any]] = field(default_factory=list)
 
     @property
+    def input_total(self) -> int:
+        """输入 token 总量（含缓存命中部分）。"""
+        return self.input_tokens + self.cached_tokens
+
+    @property
     def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
+        return self.input_total + self.output_tokens
 
     @property
     def avg_latency_ms(self) -> int:
@@ -84,6 +101,7 @@ class DailyStats:
         """序列化为面向展示的字典（含派生字段）。"""
         return {
             **asdict(self),
+            "input_total": self.input_total,
             "total_tokens": self.total_tokens,
             "avg_latency_ms": self.avg_latency_ms,
         }
@@ -136,6 +154,9 @@ class MetricsCollector:
         for date, raw in days.items():
             if not isinstance(raw, dict):
                 continue
+            if not _DATE_RE.fullmatch(str(date)):
+                # 历史版本写入的聚合键（如 last_7_days），直接丢弃
+                continue
             stats = DailyStats(date=date)
             for key, value in raw.items():
                 if key == "date":
@@ -178,6 +199,21 @@ class MetricsCollector:
             return
         for date in sorted(self._days)[: -self._retention_days]:
             self._days.pop(date, None)
+
+    def prune_legacy_keys(self) -> int:
+        """清理历史版本遗留的非日期键（如 ``last_7_days``）。
+
+        返回被清理的键数量。老版本会把聚合结果误写入按天字典，
+        升级后需要把这些脏数据移除，否则会一直被当作「历史日期」参与排序。
+        """
+        removed = 0
+        for date in list(self._days):
+            if not _DATE_RE.fullmatch(date):
+                self._days.pop(date, None)
+                removed += 1
+        if removed:
+            self._dirty = True
+        return removed
 
     # -- 记录 -------------------------------------------------------------
     @staticmethod
@@ -235,6 +271,25 @@ class MetricsCollector:
         self._dirty = True
         return record
 
+    def record_failure(
+        self,
+        *,
+        session: str = "",
+        provider_id: str = "",
+        route: str = "",
+        latency_ms: int = 0,
+        error: str = "",
+    ) -> TokenUsageRecord:
+        """记录一次失败请求（不计 token，但计入失败数）。"""
+        return self.record(
+            session=session,
+            provider_id=provider_id,
+            route=route,
+            latency_ms=latency_ms,
+            success=False,
+            error=error,
+        )
+
     # -- 查询 -------------------------------------------------------------
     def today_stats(self) -> DailyStats:
         return self._bucket()
@@ -245,9 +300,15 @@ class MetricsCollector:
         return [self._days[key] for key in keys]
 
     def summary(self, days: int = 7) -> dict[str, Any]:
-        """聚合最近 N 天的总览数据。"""
+        """聚合最近 N 天的总览数据。
+
+        注意：这里使用独立的临时 ``DailyStats`` 做累加，**不会**把它写进
+        ``self._days``。早前的实现把聚合结果存进了按天字典，flush 后会在统计
+        文件里留下 ``last_7_days`` 这类假日期，既污染 retention 裁剪，也会让
+        ``/superai stats`` 的数字随调用次数不断翻倍。
+        """
         buckets = self.range_stats(days)
-        total = DailyStats(date=f"last_{days}_days")
+        total = DailyStats(date=f"last_{max(1, int(days))}_days")
         for bucket in buckets:
             total.requests += bucket.requests
             total.failures += bucket.failures

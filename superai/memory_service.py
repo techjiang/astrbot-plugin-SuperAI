@@ -10,12 +10,11 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from astrbot.api import logger
 
-from .core.utils import extract_json, normalize_space, truncate
+from .core.utils import extract_json, normalize_space, strip_markup, truncate
 
 if TYPE_CHECKING:  # pragma: no cover
     from .main import SuperAIPlugin
@@ -57,23 +56,36 @@ class MemoryService:
         self.plugin = plugin
 
     # -- 摘要 -------------------------------------------------------------
+    def light_candidates(self) -> list[str]:
+        """「轻量任务」的候选模型链：摘要专用 → cheap → strong。"""
+        config = self.plugin.config
+        candidates: list[str] = []
+        for pid in (
+            str(config.memory.get("summary_provider_id") or ""),
+            config.provider_map().get("cheap", ""),
+            config.provider_map().get("strong", ""),
+        ):
+            if pid and pid not in candidates:
+                candidates.append(pid)
+        return candidates
+
     async def summarize(self, session: str, dialogue: str) -> str:
         """把对话压缩成摘要；失败时返回空字符串。"""
         if not dialogue.strip():
             return ""
-        limit = int(self.plugin.config.memory.get("summary_max_chars") or 600)
+        limit = max(80, int(self.plugin.config.memory.get("summary_max_chars") or 600))
         prompt = SUMMARY_PROMPT.format(limit=limit, dialogue=dialogue[:12000])
-        provider_id = str(
-            self.plugin.config.memory.get("summary_provider_id")
-            or self.plugin.config.provider_map().get("cheap")
-            or ""
-        )
         try:
-            text = await self.plugin.llm_simple(prompt, provider_id=provider_id, session=session)
+            text = await self.plugin.agent.simple(
+                prompt,
+                candidates=self.light_candidates(),
+                attempts=2,
+            )
         except Exception as exc:  # noqa: BLE001 - 摘要失败不应影响对话
             logger.warning(f"[SuperAI] 生成摘要失败：{exc}")
             return ""
-        return truncate(normalize_space(text), limit, suffix="")
+        # 摘要里不应残留内部标签
+        return truncate(normalize_space(strip_markup(text)), limit, suffix="")
 
     async def maybe_summarize(self, session: str, history: list[str]) -> str:
         """按阈值决定是否生成摘要。
@@ -85,29 +97,42 @@ class MemoryService:
         返回:
             最新摘要文本（未触发或不成功时返回已有摘要）。
         """
-        cfg = self.plugin.config.memory
-        if not cfg.get("auto_summary", True):
+        if not self.plugin.config.summary_enabled:
             return self.plugin.summaries.get(session).summary
 
-        trigger = max(4, int(cfg.get("summary_trigger_rounds") or 12))
+        trigger = max(4, int(self.plugin.config.memory.get("summary_trigger_rounds") or 12))
         current = self.plugin.summaries.get(session)
-        pending = len(history) - current.covered_rounds
-        if pending < trigger:
+        # history 是「最近一页」，长度恒等于页面大小，所以不能用它当总轮数。
+        # 用摘要里累计的 total_rounds 判断是否到了该压缩的时候。
+        rounds_since_summary = max(0, current.total_rounds - current.covered_rounds)
+        if rounds_since_summary < trigger:
             return current.summary
 
         dialogue = "\n".join(history[-max(trigger * 2, 10) :])
         summary = await self.summarize(session, dialogue)
         if not summary:
+            # 摘要失败时把已覆盖轮数推进到「倒数一个触发周期」，
+            # 避免每一轮都重新调用模型（会持续烧钱）
+            self.plugin.summaries.update(
+                session,
+                current.summary,
+                covered_rounds=max(current.covered_rounds, current.total_rounds - trigger),
+                covered_until=self.plugin.last_active_ts(),
+                total_rounds=current.total_rounds,
+            )
             return current.summary
 
         self.plugin.summaries.update(
             session,
             summary,
-            covered_rounds=len(history),
+            covered_rounds=current.total_rounds,
             covered_until=self.plugin.last_active_ts(),
-            total_rounds=max(current.total_rounds, len(history)),
+            total_rounds=current.total_rounds,
         )
-        logger.info(f"[SuperAI] 会话 {session} 摘要已更新（覆盖 {len(history)} 条历史）")
+        logger.info(
+            f"[SuperAI] 会话 {session} 摘要已更新"
+            f"（累计 {current.total_rounds} 轮，本次压缩 {rounds_since_summary} 轮）"
+        )
         return summary
 
     # -- 事实抽取 ---------------------------------------------------------
@@ -119,14 +144,11 @@ class MemoryService:
         if len(normalize_space(dialogue)) < 20:
             return []
 
-        provider_id = str(
-            cfg.get("summary_provider_id") or self.plugin.config.provider_map().get("cheap") or ""
-        )
         try:
-            raw = await self.plugin.llm_simple(
+            raw = await self.plugin.agent.simple(
                 EXTRACT_PROMPT.format(dialogue=dialogue[:8000]),
-                provider_id=provider_id,
-                session=session,
+                candidates=self.light_candidates(),
+                attempts=2,
             )
             data = extract_json(raw)
         except Exception as exc:  # noqa: BLE001 - 抽取失败属正常情况
@@ -152,8 +174,3 @@ class MemoryService:
             if entry:
                 written.append(entry.content)
         return written
-
-    @staticmethod
-    def dialogue_fingerprint(dialogue: str) -> str:
-        """生成对话指纹，用于避免重复抽取。"""
-        return json.dumps(normalize_space(dialogue)[-500:], ensure_ascii=False)

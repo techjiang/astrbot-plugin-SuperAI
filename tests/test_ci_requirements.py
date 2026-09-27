@@ -32,6 +32,11 @@ def runtime_requirements() -> set[str]:
     return _requirement_names(ROOT / "requirements.txt")
 
 
+@pytest.fixture(scope="module")
+def dev_requirements() -> set[str]:
+    return _requirement_names(ROOT / "requirements-dev.txt")
+
+
 @pytest.mark.parametrize("dep", RUNTIME_DEPS)
 def test_runtime_dep_declared(dep, runtime_requirements):
     assert dep in runtime_requirements, f"{dep} 必须声明在 requirements.txt 中"
@@ -64,3 +69,25 @@ def test_ci_installs_requirements_files():
 def test_dev_requirements_declared():
     dev = _requirement_names(ROOT / "requirements-dev.txt")
     assert {"ruff", "pytest", "pytest-asyncio"} <= dev
+
+
+def test_test_suite_imports_are_declared(dev_requirements):
+    """测试代码 import 的三方包必须声明在 requirements-dev.txt 里。"""
+    stdlib = set(__import__("sys").stdlib_module_names)
+    third_party: set[str] = set()
+    for py_file in (ROOT / "tests").rglob("*.py"):
+        if "stubs" in py_file.parts:
+            continue
+        for line in py_file.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"\s*(?:import|from)\s+([A-Za-z_][\w]*)", line)
+            if match:
+                third_party.add(match.group(1).lower())
+    third_party -= stdlib
+    third_party -= {"astrbot", "superai", "tests", "conftest"}
+    # 包名与 import 名不一致的映射（import yaml -> pyyaml）
+    aliases = {"yaml": "pyyaml"}
+    third_party = {aliases.get(name, name) for name in third_party}
+    assert third_party <= dev_requirements, (
+        "以下三方包被 tests 导入但未声明在 requirements-dev.txt："
+        f"{sorted(third_party - dev_requirements)}"
+    )

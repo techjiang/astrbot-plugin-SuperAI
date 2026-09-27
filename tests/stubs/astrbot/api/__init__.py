@@ -1,5 +1,7 @@
 """astrbot.api 替身。"""
 
+from __future__ import annotations
+
 from astrbot import logger  # noqa: F401
 
 

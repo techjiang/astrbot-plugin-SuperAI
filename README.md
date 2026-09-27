@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./logo.png" alt="SuperAI" width="180" />
+
 # SuperAI
 
 **新一代 AstrBot AI 增强插件**
@@ -8,7 +10,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.1.0-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.0-orange)](./metadata.yaml)
 
 </div>
 
@@ -69,6 +71,7 @@ AstrBot 本身已经很好用，但当你真正把它跑在群里，很快就会
 | `superai_fetch_url` | 抓取网页正文 |
 | `superai_knowledge_search` | 检索 AstrBot 知识库 |
 | `superai_remember` / `superai_recall` | 写入 / 检索长期记忆 |
+| `superai_history_summary` | 读取本会话的历史对话摘要 |
 | `superai_run_workflow` | 触发预编排的多步工作流 |
 
 ### 4. 工作流编排
@@ -128,13 +131,15 @@ SuperAI 会自动：判断档位 → 选模型 → 拉取相关记忆 → 带上
 | `/ai <问题>` | 向 SuperAI 提问（自动路由 + 记忆 + 工具），支持附带图片 |
 | `/superai status` | 查看运行状态与今日用量 |
 | `/superai stats [天数]` | 查看用量统计 |
-| `/superai memory list` | 查看本会话记忆与当前摘要 |
+| `/superai memory list [条数]` | 查看本会话记忆与当前摘要 |
 | `/superai memory search <关键词>` | 检索记忆 |
 | `/superai memory clear` | 清空本会话记忆（仅管理员） |
-| `/superai route` | 查看路由档位与模型映射 |
+| `/superai memory stats` | 查看全局记忆概览（会话数 / 各类型条数） |
+| `/superai route` | 查看路由档位、模型映射与当前降级链 |
 | `/superai route strong` | 把本会话固定到 `strong` 档位（`auto` 恢复） |
-| `/superai tools` | 查看已注册工具 |
+| `/superai tools` | 查看已注册工具及用途 |
 | `/superai workflow [名称] [输入]` | 查看或运行工作流 |
+| `/superai maintain` | 立即落盘统计并衰减记忆（仅管理员） |
 | `/superai help` | 帮助 |
 
 ## 配置说明
@@ -165,6 +170,7 @@ SuperAI 会自动：判断档位 → 选模型 → 拉取相关记忆 → 带上
 ```
 superai/
 ├── main.py              # 插件入口：钩子、指令、Web API
+├── agent_runner.py      # 带降级/超时重试的 Agent 执行器
 ├── prompt.py            # 提示词构建（稳定/动态分离）
 ├── memory_service.py    # 摘要生成与事实抽取
 ├── core/
@@ -197,22 +203,66 @@ python -m pytest tests
 
 `tests/stubs/astrbot/` 是一个最小的 AstrBot 替身，让纯逻辑模块（路由、配置、存储、
 统计、工具装配）在没有 AstrBot 的环境下也能被测试。
-若能提供真实的 AstrBot 源码路径（默认探测 `/tmp/astrbot-ref`），
-`tests/test_plugin_smoke.py` 会自动用真实框架跑一遍实例化与钩子冒烟测试。
+
+若能提供真实的 AstrBot 源码路径（默认探测 `/tmp/astrbot-ref`，
+也可用环境变量 `ASTRBOT_REF` 指定），`tests/test_plugin_smoke.py` 会自动切换成
+真实框架，跑一遍实例化、注册、LLM 双钩子、路由降级、指令与 Studio API 的冒烟测试：
+
+```bash
+git clone --depth 1 https://github.com/AstrBotDevs/AstrBot /tmp/astrbot-ref
+python -m pytest tests
+```
+
+> 真实框架的 `sys.path` 切换发生在 `conftest.py` 的 `pytest_configure`，
+> 目的是避免同一进程内混用 stub 与真实 AstrBot（会让 sqlmodel 重复注册表而报错）。
+
+## 与 AstrBot 的协作细节
+
+这些是实现时踩过坑、写进测试里固定下来的行为，升级 AstrBot 时值得复查：
+
+- **图片不能被清空**：AstrBot 可能在 `on_llm_request` 之前就完成图片压缩 /
+  转述，并把 `req.image_urls` 置空。SuperAI 会在钩子入口快照原始图片并在
+  之后补回，否则多模态请求会退化成纯文本。
+- **不注入「当前时间」**：`extra_user_content_parts` 里只要多一个 part，
+  provider 就会把纯字符串 user 消息升级成多模态 content 数组，
+  自动前缀缓存随之失效。SuperAI 因此遵循「**没内容就不注入**」，
+  并且默认不带每轮都变的时间戳。
+- **动态内容标记为「仅本轮有效」**：注入的 `<superai_context>` 会调用
+  `mark_as_temp()`，不会写进会话历史。老版本 AstrBot 没有该能力时会退化为
+  只写 `system_prompt`。
+- **历史分页方向**：`get_human_readable_context` 的 `page=1` 是**最旧**的一页，
+  取最近对话必须先算总页数。
+- **失败信号**：AstrBot 用 `LLMResponse.role == "err"` 表示本轮调用失败，
+  SuperAI 据此统计失败数并给该 provider 记一次「不健康」。
 
 ## 局限与已知问题
 
 - `long_context` 与 `vision` 档位需要你配置对应能力模型，否则会回落到其他档位；
 - 联网搜索默认引擎（DuckDuckGo HTML 端点）无需 Key，但可能受网络环境影响；
   生产环境建议自建 SearXNG 并在配置中切换；
-- 事实抽取依赖模型输出合法 JSON，抽取失败会静默跳过（不影响对话）；
-- 记忆检索使用轻量 n-gram 相似度而非向量检索，以保持零重依赖。
+- 事实抽取依赖模型输出合法 JSON，抽取失败会静默跳过（不影响对话），
+  并且失败时会推进内部进度，避免每轮都重试；
+- 记忆检索使用轻量 n-gram + 关键词相似度而非向量检索，以保持零重依赖；
+  完全无相关时会回落到权重最高的若干条记忆（否则这些长期记忆等于白存）；
+- 知识库自动注入（`knowledge_base.auto_inject`）会增加每轮的一次检索开销，
+  默认关闭。
 
 ## 灵感与致谢
 
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) —— 插件框架与官方开发文档
 - [Soulter/helloworld](https://github.com/Soulter/helloworld) —— 插件模板
 - 插件市场中的 `astrbot_plugin_treasure_bag` 等开源插件 —— 工程组织参考
+
+## 关于作者
+
+科技酱
+
+- 官网：https://docs.asoe.cn
+- GitHub：https://github.com/techjiang/
+- 哔哩哔哩：https://space.bilibili.com/1768832152
+- 玲珑社区：https://forums.asoe.cn/
+- QQ 群：291974598
+- QQ 群②：474819022
 
 ## License
 

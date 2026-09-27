@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import ConfigError
+from .utils import as_bool as _as_bool
+from .utils import as_int as _as_int
+from .utils import as_list as _as_list
 
 # ---------------------------------------------------------------------------
 # 默认值：与 _conf_schema.json 保持一致，便于单测与缺省兜底
@@ -146,31 +149,45 @@ class SuperAIConfig:
 
     @property
     def router_enabled(self) -> bool:
-        return self.enabled and bool(self.router.get("enabled", True))
+        return self.enabled and _as_bool(self.router.get("enabled"), True)
 
     @property
     def memory_enabled(self) -> bool:
-        return self.enabled and bool(self.memory.get("enabled", True))
+        return self.enabled and _as_bool(self.memory.get("enabled"), True)
 
     @property
     def web_enabled(self) -> bool:
-        return self.enabled and bool(self.web.get("enabled", False))
+        return self.enabled and _as_bool(self.web.get("enabled"), False)
 
     @property
     def kb_enabled(self) -> bool:
-        return self.enabled and bool(self.knowledge_base.get("enabled", False))
+        return self.enabled and _as_bool(self.knowledge_base.get("enabled"), False)
 
     @property
     def agent_enabled(self) -> bool:
-        return self.enabled and bool(self.agent.get("enabled", True))
+        return self.enabled and _as_bool(self.agent.get("enabled"), True)
 
     @property
     def metrics_enabled(self) -> bool:
-        return self.enabled and bool(self.metrics.get("enabled", True))
+        return self.enabled and _as_bool(self.metrics.get("enabled"), True)
 
     @property
     def workflow_enabled(self) -> bool:
-        return self.enabled and bool(self.workflow.get("enabled", True))
+        return self.enabled and _as_bool(self.workflow.get("enabled"), True)
+
+    @property
+    def summary_enabled(self) -> bool:
+        return self.memory_enabled and _as_bool(self.memory.get("auto_summary"), True)
+
+    @property
+    def long_term_enabled(self) -> bool:
+        return self.memory_enabled and _as_bool(self.memory.get("long_term_enabled"), True)
+
+    @property
+    def inject_memories(self) -> bool:
+        return self.long_term_enabled and _as_bool(self.memory.get("inject_into_prompt"), True)
+
+    # -- 带默认值与夹紧的整数读取 -----------------------------------------
 
     # -- 派生配置 ---------------------------------------------------------
     def provider_map(self) -> dict[str, str]:
@@ -183,6 +200,18 @@ class SuperAIConfig:
             "vision": str(router.get("vision_provider_id") or ""),
             "long_context": str(router.get("long_context_provider_id") or ""),
         }
+
+    def int_option(self, section: dict[str, Any], key: str, default: int) -> int:
+        """从某个配置分组里安全地读整数。"""
+        return _as_int(section.get(key), default)
+
+    def tier_provider(self, tier: str) -> str:
+        """读取某个档位配置的 provider id。"""
+        return str(self.provider_map().get(tier) or "")
+
+    def relative_tier(self, tier: str) -> str:
+        """把 ``default`` 档位归一化为具体档位，便于取超时等参数。"""
+        return "strong" if tier not in self.provider_map() else tier
 
     def keyword_routes(self) -> dict[str, str]:
         """关键词 -> 路由档位。用于 rule 策略。"""
@@ -200,8 +229,8 @@ class SuperAIConfig:
             # 私聊没有「群」的概念，allow_groups / deny_groups 均只针对群聊
             return True
         gid = str(group_id)
-        allow = {str(g) for g in (self.commands.get("allow_groups") or [])}
-        deny = {str(g) for g in (self.commands.get("deny_groups") or [])}
+        allow = set(_as_list(self.commands.get("allow_groups")))
+        deny = set(_as_list(self.commands.get("deny_groups")))
         if gid in deny:
             return False
         # 白名单为空 = 不限制；非空 = 必须命中

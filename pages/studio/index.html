@@ -9,12 +9,17 @@
   <body>
     <main class="wrap">
       <header class="head">
-        <div>
-          <h1 id="heading">SuperAI Studio</h1>
-          <p class="sub" id="version"></p>
+        <div class="brand">
+          <img src="./logo.svg" alt="SuperAI" class="logo" />
+          <div>
+            <h1 id="heading">SuperAI Studio</h1>
+            <p class="sub" id="version"></p>
+          </div>
         </div>
         <button id="refresh" class="btn">刷新</button>
       </header>
+
+      <p id="error" class="error"></p>
 
       <section class="card">
         <h2 id="status-title">运行状态</h2>
@@ -23,15 +28,26 @@
       </section>
 
       <section class="card">
+        <h2 id="health-title">模型健康度</h2>
+        <ul id="health" class="list"></ul>
+      </section>
+
+      <section class="card">
         <h2 id="stats-title">用量统计</h2>
         <div class="metrics" id="stats"></div>
         <div class="bars" id="provider-bars"></div>
         <div class="bars" id="route-bars"></div>
+        <div class="bars" id="daily-bars"></div>
       </section>
 
       <section class="card">
         <h2 id="tools-title">已注册工具</h2>
         <ul id="tools" class="list"></ul>
+      </section>
+
+      <section class="card">
+        <h2 id="sessions-title">会话列表</h2>
+        <ul id="sessions" class="list"></ul>
       </section>
 
       <section class="card">
@@ -44,8 +60,6 @@
         </div>
         <pre id="memory-output" class="pre"></pre>
       </section>
-
-      <p id="error" class="error"></p>
     </main>
     <script type="module" src="./app.js"></script>
   </body>

@@ -5,7 +5,7 @@ desc: >
   SuperAI 是面向 AstrBot 的 AI 增强插件。它把「模型路由 / 自动降级」「智能记忆与摘要」
   「联网增强」「知识库问答」「AI 快捷指令」「工作流编排」「用量统计与成本控制」
   打包成一套可视化的 AI 基建，让 Bot 在保持上下文连贯的同时更快、更稳、更省。
-version: v0.1.0
+version: v0.2.0
 author: cosc
 repo: https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI
 astrbot_version: ">=4.5.7"
@@ -19,3 +19,7 @@ support_platforms:
   - discord
   - slack
   - kook
+pages:
+  - name: studio
+    title: SuperAI Studio
+    description: 查看运行状态、路由档位、模型健康度、工具清单与用量统计。

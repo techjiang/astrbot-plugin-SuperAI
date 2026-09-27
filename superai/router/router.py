@@ -24,12 +24,15 @@ default      未命中任何规则时使用会话当前模型
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from astrbot.api import logger
+
 from ..core.config import SuperAIConfig
 from ..core.errors import ProviderUnavailableError, RouteNotFoundError
-from ..core.utils import estimate_tokens
+from ..core.utils import estimate_tokens, format_ts
 
 #: 路由档位常量
 TIER_CHEAP = "cheap"
@@ -157,25 +160,119 @@ class RouteDecision:
 class SuperRouter:
     """模型路由器。"""
 
-    def __init__(self, config: SuperAIConfig) -> None:
+    #: 连续失败达到该次数后，该 provider 被视作「不健康」
+    UNHEALTHY_THRESHOLD = 2
+    #: 失败记录的保留时长（秒）；超过后自动遗忘，避免旧故障长期拖累排序
+    FAILURE_TTL = 1800.0
+
+    def __init__(self, config: SuperAIConfig, *, store: Any | None = None) -> None:
         self.config = config
         self._failures: dict[str, int] = {}
         """provider_id -> 连续失败次数，用于健康度排序"""
+        self._last_failure: dict[str, float] = {}
+        """provider_id -> 最近一次失败时间戳"""
+        self._store = store
+        """可选的 JsonStore，用于把健康度持久化到磁盘"""
+        self._load_health()
 
     # -- 健康度 -----------------------------------------------------------
+    def _load_health(self) -> None:
+        if self._store is None:
+            return
+        data = self._store.get("router_health")
+        if not isinstance(data, dict):
+            return
+        now = time.time()
+        for pid, raw in data.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                ts = float(raw.get("ts") or 0)
+                count = int(raw.get("count") or 0)
+            except (TypeError, ValueError):
+                continue
+            if now - ts > self.FAILURE_TTL or count <= 0:
+                continue
+            self._failures[str(pid)] = count
+            self._last_failure[str(pid)] = ts
+
+    def _save_health(self) -> None:
+        if self._store is None:
+            return
+        self._store.set(
+            {
+                pid: {"count": count, "ts": self._last_failure.get(pid, time.time())}
+                for pid, count in self._failures.items()
+                if count > 0
+            },
+            "router_health",
+        )
+
+    def _expire_failures(self) -> None:
+        now = time.time()
+        expired = [pid for pid, ts in self._last_failure.items() if now - ts > self.FAILURE_TTL]
+        for pid in expired:
+            self._failures.pop(pid, None)
+            self._last_failure.pop(pid, None)
+
     def mark_failure(self, provider_id: str) -> None:
-        if provider_id:
-            self._failures[provider_id] = self._failures.get(provider_id, 0) + 1
+        if not provider_id:
+            return
+        self._expire_failures()
+        self._failures[provider_id] = self._failures.get(provider_id, 0) + 1
+        self._last_failure[provider_id] = time.time()
+        self._save_health()
+        logger.debug(
+            f"[SuperAI] 记录模型失败：{provider_id}（连续 {self._failures[provider_id]} 次）"
+        )
 
     def mark_success(self, provider_id: str) -> None:
-        if provider_id:
-            self._failures.pop(provider_id, None)
+        if not provider_id:
+            return
+        if self._failures.pop(provider_id, None) is not None:
+            self._last_failure.pop(provider_id, None)
+            self._save_health()
 
     def failure_count(self, provider_id: str) -> int:
+        self._expire_failures()
         return self._failures.get(provider_id, 0)
 
+    def is_unhealthy(self, provider_id: str, *, available_ids: set[str] | None = None) -> bool:
+        """判断某 provider 是否「不健康」。
+
+        不健康 = 连续失败次数达到阈值，**而且**还存在别的可用 provider。
+        这样即使所有模型都在报错，也不会因为「全部不健康」而彻底不可用。
+        """
+        if self.failure_count(provider_id) < self.UNHEALTHY_THRESHOLD:
+            return False
+        if available_ids is None:
+            return True
+        others = [pid for pid in available_ids if pid != provider_id]
+        return bool(others)
+
     def health(self) -> dict[str, int]:
+        self._expire_failures()
         return dict(self._failures)
+
+    def health_detail(self, *, available_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        """返回面向展示的健康度列表（Studio 面板使用）。"""
+        self._expire_failures()
+        ids = set(available_ids or self._failures)
+        ids |= set(self._failures)
+        rows: list[dict[str, Any]] = []
+        for pid in sorted(ids):
+            count = self._failures.get(pid, 0)
+            rows.append(
+                {
+                    "provider_id": pid,
+                    "failures": count,
+                    "healthy": count < self.UNHEALTHY_THRESHOLD,
+                    "last_failure": format_ts(self._last_failure.get(pid, 0))
+                    if pid in self._last_failure
+                    else "",
+                }
+            )
+        return rows
 
     # -- 决策 -------------------------------------------------------------
     def decide(
@@ -262,13 +359,15 @@ class SuperRouter:
         return any(keyword in lowered for keyword in WEB_KEYWORDS)
 
     def _build(self, tier: str, reason: str) -> RouteDecision:
-        """构造决策，附带降级链。"""
+        """构造决策，附带降级链。
+
+        降级链只包含「真正配了模型的档位」，并保证主模型在最前面。
+        """
         provider_map = self.config.provider_map()
         chain: list[str] = []
         primary = provider_map.get(tier, "")
         if primary:
             chain.append(primary)
-        # 降级顺序：同档位（已加） -> strong -> cheap -> 其余档位
         for fallback_tier in (TIER_STRONG, TIER_CHEAP, TIER_REASONING, TIER_LONG_CONTEXT):
             if fallback_tier == tier:
                 continue
@@ -294,11 +393,14 @@ class SuperRouter:
         异常:
             RouteNotFoundError: 没有任何可用候选，且会话默认模型也缺失。
         """
-        candidates: list[str] = []
-        for pid in decision.chain():
-            if available_ids is None or pid in available_ids:
-                candidates.append(pid)
-        if session_provider_id and (available_ids is None or session_provider_id in available_ids):
+
+        def _usable(pid: str) -> bool:
+            return bool(pid) and (available_ids is None or pid in available_ids)
+
+        candidates: list[str] = [pid for pid in decision.chain() if _usable(pid)]
+        if not candidates and _usable(session_provider_id):
+            # 只在「一个档位模型都没配」时才回落到会话默认模型，
+            # 否则用户配置的路由档位会被悄悄忽略。
             candidates.append(session_provider_id)
 
         if not candidates:
@@ -309,9 +411,38 @@ class SuperRouter:
                 )
             raise ProviderUnavailableError("没有可用的模型提供商")
 
-        # 健康度优先：连续失败的 provider 排到后面
-        candidates.sort(key=lambda pid: self.failure_count(pid))
+        # 健康度优先：连续失败的 provider 排到后面（稳定排序，不改变同分顺序）
+        order = {pid: index for index, pid in enumerate(candidates)}
+        candidates.sort(key=lambda pid: (self.failure_count(pid), order[pid]))
         return candidates[0]
+
+    def ordered_candidates(
+        self,
+        decision: RouteDecision,
+        *,
+        primary: str = "",
+        session_provider_id: str = "",
+        available_ids: set[str] | None = None,
+        max_retries: int | None = None,
+    ) -> list[str]:
+        """返回「健康 provider 优先」的候选顺序。
+
+        这是真正被 main.py 使用的入口：先取完整降级链，再把连续失败的
+        provider 排到后面，这样即使链里第一个模型一直挂，也不会每轮都先
+        撞一次墙。
+        """
+        chain = self.fallback_chain(
+            decision,
+            primary=primary,
+            session_provider_id=session_provider_id,
+            available_ids=available_ids,
+            max_retries=max_retries,
+        )
+        if len(chain) <= 1:
+            return chain
+        healthy = [pid for pid in chain if not self.is_unhealthy(pid)]
+        unhealthy = [pid for pid in chain if self.is_unhealthy(pid)]
+        return healthy + unhealthy
 
     def fallback_chain(
         self,
@@ -329,7 +460,8 @@ class SuperRouter:
         for pid in decision.chain():
             if pid != primary:
                 chain.append(pid)
-        if session_provider_id:
+        if session_provider_id and not chain:
+            # 档位模型都没配时才回落到会话默认模型，避免抢走用户配置的档位
             chain.append(session_provider_id)
 
         if not self.config.router.get("fallback_enabled", True):

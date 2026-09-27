@@ -5,17 +5,39 @@
     "desc": "SuperAI is an AI enhancement layer for AstrBot, bundling model routing with automatic failover, rolling summaries and long-term memory, web augmentation, knowledge-base QA, quick AI commands, workflow orchestration, and usage/cost control."
   },
   "config": {
-    "enabled": {"description": "Enable SuperAI"},
-    "enabled_tasks": {"description": "Task types to enhance"},
-    "debug": {"description": "Debug logging"},
-    "router": {"description": "Model routing (SuperRouter)"},
-    "memory": {"description": "Memory & summary (SuperMemory)"},
-    "web": {"description": "Web search"},
-    "knowledge_base": {"description": "Knowledge base"},
-    "agent": {"description": "Agent settings"},
-    "commands": {"description": "Command behaviour"},
-    "metrics": {"description": "Usage & quota"},
-    "workflow": {"description": "Workflows"}
+    "enabled": {
+      "description": "Enable SuperAI"
+    },
+    "enabled_tasks": {
+      "description": "Task types to enhance"
+    },
+    "debug": {
+      "description": "Debug logging"
+    },
+    "router": {
+      "description": "Model routing (SuperRouter)"
+    },
+    "memory": {
+      "description": "Memory & summary (SuperMemory)"
+    },
+    "web": {
+      "description": "Web search"
+    },
+    "knowledge_base": {
+      "description": "Knowledge base"
+    },
+    "agent": {
+      "description": "Agent settings"
+    },
+    "commands": {
+      "description": "Command behaviour"
+    },
+    "metrics": {
+      "description": "Usage & quota"
+    },
+    "workflow": {
+      "description": "Workflows"
+    }
   },
   "pages": {
     "studio": {
@@ -34,7 +56,11 @@
       "tokens": "Tokens",
       "latency": "Avg latency",
       "providers": "Providers",
-      "routes": "Routes"
+      "routes": "Routes",
+      "health": "Provider health",
+      "sessions": "Sessions",
+      "workflows": "Workflows",
+      "noData": "No data"
     }
   }
 }

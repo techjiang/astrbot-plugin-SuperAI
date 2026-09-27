@@ -10,7 +10,56 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
+from ..core.utils import as_int, normalize_space, truncate
 from .base import SuperAITool, extract_tool_context
+
+
+async def retrieve_kb(
+    context: Any,
+    query: str,
+    kb_names: list[str],
+    *,
+    top_k: int = 5,
+) -> str:
+    """调用 AstrBot 的 KB 接口，把结果整理成可直接喂给模型的文本。
+
+    统一在这里做「结果格式归一化」，让工具调用与自动注入两条路径共用。
+    """
+    kb_manager = getattr(context, "kb_manager", None)
+    if kb_manager is None:
+        return ""
+
+    query = normalize_space(query)
+    if not query or not kb_names:
+        return ""
+
+    try:
+        result = await kb_manager.retrieve(query, kb_names, top_m_final=top_k)
+    except Exception as exc:  # noqa: BLE001 - 知识库异常不应中断对话
+        logger.warning(f"[SuperAI] 知识库检索失败：{exc}")
+        return ""
+
+    if not result:
+        return ""
+
+    if isinstance(result, dict):
+        results = result.get("results")
+        if not results:
+            return str(result.get("context_text") or "")
+        lines: list[str] = []
+        for index, item in enumerate(results, 1):
+            if not isinstance(item, dict):
+                continue
+            content = truncate(normalize_space(item.get("content")), 500, suffix="")
+            if not content:
+                continue
+            lines.append(
+                f"{index}. 来源：{item.get('kb_name')} / {item.get('doc_name')}"
+                f"（相关度 {float(item.get('score') or 0):.2f}）\n   {content}"
+            )
+        return "\n".join(lines)
+
+    return str(result)
 
 
 @dataclass
@@ -55,34 +104,13 @@ class KnowledgeSearchTool(SuperAITool):
         if not kb_names:
             return "没有配置可检索的知识库。"
 
-        try:
-            top_k = int(kwargs.get("top_k") or tool_ctx.config.knowledge_base.get("top_k") or 5)
-        except (TypeError, ValueError):
-            top_k = 5
-        top_k = max(1, min(20, top_k))
-
-        kb_manager = getattr(tool_ctx.plugin.context, "kb_manager", None)
-        if kb_manager is None:
-            return "当前 AstrBot 版本不支持知识库。"
-
-        try:
-            result = await kb_manager.retrieve(query, kb_names, top_m_final=top_k)
-        except Exception as exc:  # noqa: BLE001 - 知识库异常不应中断对话
-            logger.warning(f"[SuperAI] 知识库检索失败：{exc}")
-            return f"知识库检索失败：{exc}"
-
-        if not result:
+        top_k = as_int(
+            kwargs.get("top_k") or tool_ctx.config.knowledge_base.get("top_k"),
+            5,
+            minimum=1,
+            maximum=20,
+        )
+        text = await retrieve_kb(tool_ctx.plugin.context, query, kb_names, top_k=top_k)
+        if not text:
             return "知识库中没有找到相关内容。"
-
-        results = result.get("results") if isinstance(result, dict) else None
-        if not results:
-            context_text = result.get("context_text") if isinstance(result, dict) else ""
-            return context_text or "知识库中没有找到相关内容。"
-
-        lines = ["知识库检索结果："]
-        for index, item in enumerate(results, 1):
-            lines.append(
-                f"{index}. 来源：{item.get('kb_name')} / {item.get('doc_name')}"
-                f"（相关度 {float(item.get('score') or 0):.2f}）\n   {item.get('content', '')[:500]}"
-            )
-        return "\n".join(lines)
+        return "知识库检索结果：\n" + text

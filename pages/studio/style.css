@@ -112,3 +112,28 @@ body {
 }
 
 .error { color: var(--danger); font-size: 13px; min-height: 20px; }
+
+/* --- SuperAI Studio 增强部分 --- */
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo { width: 40px; height: 40px; flex: 0 0 auto; }
+
+.list li { font-size: 13px; margin-bottom: 4px; }
+
+.link {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  word-break: break-all;
+}
+.link:hover { text-decoration: underline; }
+
+.bars .name { width: 200px; }
+
+@media (max-width: 640px) {
+  .bar-row .name { width: 110px; }
+  .head { flex-direction: column; align-items: flex-start; }
+}

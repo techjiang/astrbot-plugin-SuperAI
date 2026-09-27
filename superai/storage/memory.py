@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -64,6 +65,24 @@ class MemoryEntry:
         )
 
 
+#: 记忆类型白名单
+ALLOWED_KINDS = frozenset({"fact", "preference", "event"})
+
+#: 一条记忆的最小字符数（更短的视为噪声）
+MIN_MEMORY_CHARS = 4
+
+
+#: 英文 / 数字词的最小长度，更短的（如 "a"）不参与关键词打分
+_MIN_TOKEN_LEN = 2
+
+
+def _tokens(text: str) -> set[str]:
+    """切出英文 / 数字关键词（中文用 n-gram 处理，不走这里）。"""
+    return {
+        token for token in re.findall(r"[a-z0-9_]+", text or "") if len(token) >= _MIN_TOKEN_LEN
+    }
+
+
 def _grams(text: str, size: int = 2) -> set[str]:
     """生成字符 n-gram 集合，用于中英文混排的轻量相似度。"""
     normalized = normalize_space(text).lower()
@@ -114,8 +133,10 @@ class MemoryStore:
     ) -> MemoryEntry | None:
         """新增一条记忆；内容为空或不满足最小长度时返回 ``None``。"""
         text = normalize_space(content)
-        if len(text) < 4:
+        if len(text) < MIN_MEMORY_CHARS:
             return None
+        if kind not in ALLOWED_KINDS:
+            kind = "fact"
         memory_id = fingerprint(text, length=20)
         data = self._all()
         bucket = data.setdefault(session, [])
@@ -165,28 +186,59 @@ class MemoryStore:
 
     # -- 检索 -------------------------------------------------------------
     def search(self, session: str, query: str, *, top_k: int = 5) -> list[MemoryEntry]:
-        """按相似度检索会话记忆。"""
+        """按相似度检索会话记忆。
+
+        打分由两部分组成：
+
+        1. **相关性**：子串命中 + 字符 n-gram 重合度 + 关键词重合度。
+        2. **重要度**：权重（被反复确认过的记忆更稳）。
+
+        只要有任何一条记忆的相关性 > 0，就只返回相关的那些；一条都没命中时
+        回落到「权重最高的若干条」——这很重要，否则用户说「帮我写一段文案」
+        这种与历史偏好无关的请求，模型就完全拿不到「用户喜欢简洁的回答」这类
+        背景信息，长期记忆等于白存。
+        """
         entries = self._entries(session)
         if not entries:
             return []
-        query_grams = _grams(query)
+        limit = max(1, min(int(top_k or 5), 50))
+
         query_norm = normalize_space(query).lower()
+        if not query_norm:
+            # 没有 query 时按权重给概览
+            return self.list(session, limit=limit)
+
+        query_grams = _grams(query_norm)
+        query_tokens = _tokens(query_norm)
         scored: list[tuple[float, MemoryEntry]] = []
         for entry in entries:
+            content_lower = entry.content.lower()
             score = 0.0
-            if query_norm and query_norm in entry.content.lower():
+            if query_norm in content_lower:
                 score += 3.0
             if query_grams:
                 entry_grams = _grams(entry.content)
                 if entry_grams:
                     overlap = len(query_grams & entry_grams)
                     score += 2.0 * overlap / max(1, len(query_grams))
+            if query_tokens:
+                entry_tokens = _tokens(content_lower)
+                if entry_tokens:
+                    shared = len(query_tokens & entry_tokens)
+                    score += 1.5 * shared / max(1, len(query_tokens))
             if score <= 0:
                 continue
             score *= 1.0 + min(entry.weight, 5.0) * 0.1
             scored.append((score, entry))
+
+        if not scored:
+            # 没有任何相关性：回落到权重最高的记忆，保证模型仍拿得到背景
+            fallback = sorted(entries, key=lambda item: item.weight, reverse=True)
+            return fallback[:limit]
+
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        selected = [entry for _, entry in scored[: max(1, top_k)]]
+        limit = max(1, min(int(top_k or 5), 50))
+        selected = [entry for _, entry in scored[:limit]]
 
         # 命中即加权，让「常用记忆」更稳
         if selected:
@@ -202,10 +254,35 @@ class MemoryStore:
         return selected
 
     def list(self, session: str, *, limit: int = 20) -> list[MemoryEntry]:
-        """按更新时间倒序列出会话记忆。"""
+        """按「权重、更新时间」倒序列出会话记忆。"""
         entries = self._entries(session)
-        entries.sort(key=lambda entry: entry.updated_at, reverse=True)
-        return entries[: max(1, limit)]
+        entries.sort(
+            key=lambda entry: (entry.weight, entry.updated_at),
+            reverse=True,
+        )
+        return entries[: max(1, int(limit))]
+
+    def get(self, session: str, memory_id: str) -> MemoryEntry | None:
+        """按 ID 读取单条记忆。"""
+        for item in self._all().get(session) or []:
+            if item.get("memory_id") == memory_id:
+                return MemoryEntry.from_dict(item)
+        return None
+
+    def stats(self, session: str | None = None) -> dict[str, Any]:
+        """返回记忆概览（总数与各类型数量）。"""
+        data = self._all()
+        buckets = {session: data.get(session) or []} if session is not None else data
+        kinds: dict[str, int] = {"fact": 0, "preference": 0, "event": 0}
+        total = 0
+        for bucket in buckets.values():
+            if not isinstance(bucket, list):
+                continue
+            for item in bucket:
+                total += 1
+                kind = str(item.get("kind") or "fact")
+                kinds[kind] = kinds.get(kind, 0) + 1
+        return {"total": total, "kinds": kinds, "sessions": len(buckets)}
 
     # -- 清理 -------------------------------------------------------------
     def remove(self, session: str, memory_id: str) -> bool:
@@ -227,6 +304,10 @@ class MemoryStore:
 
     def clear_all(self) -> None:
         self._store.set({}, "long_term")
+
+    def sessions(self) -> list[str]:
+        """返回所有存在记忆的会话标识。"""
+        return [key for key, value in self._all().items() if isinstance(value, list) and value]
 
     def count(self, session: str | None = None) -> int:
         data = self._all()
