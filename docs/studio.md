@@ -60,3 +60,7 @@ telegram:PrivateMessage:987654321
 - [指令手册](./commands.md)
 - [用量统计与成本控制](./usage-and-budget.md)
 - [记忆与摘要](./memory.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `pages/studio` 与测试断言，无凭空描述）

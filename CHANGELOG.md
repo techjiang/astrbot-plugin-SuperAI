@@ -25,6 +25,18 @@
 - 新增 [CONTRIBUTING.md](CONTRIBUTING.md)（分支/提交/测试/文档要求）
   与 [SECURITY.md](SECURITY.md)（漏洞报告渠道与既有安全边界）。
 
+### 文档准确性复核
+
+- 逐条对照代码修正 3 处「写得比实现漂亮」的描述：
+  [SECURITY.md](SECURITY.md) 原写「面板不裸插动态值（不用 `innerHTML`）」，
+  实际是「用了 `innerHTML`，但所有插值经过 `esc()` 转义」；
+  [工具与工作流](docs/tools-and-workflows.md) 原来只说「异常被基类兜住」，
+  未说明兜住的形态（记 error 日志 + 把失败文本作为工具结果返回），
+  容易让人误以为异常被静默吞掉；
+  [安装与升级](docs/install.md) 引用了项目里并不存在的环境变量。
+- 每篇文档尾部新增「最后核对」标注，写明核对的版本与对照对象，
+  下次维护时能直接知道该对着什么看。
+
 ### 测试
 
 - 新增 `tests/test_docs_consistency.py`（14 项），把文档里的**可验证事实**与代码对齐：
@@ -35,6 +47,13 @@
   - README 版本徽章 / `metadata.yaml` / `superai/version.py` 三方一致；
   - 文档里的插件目录名、数据目录名、Studio API 路径与代码一致；
   - FAQ 覆盖「静默失效」类典型故障。
+- 上述 14 项之后又新增 4 项**文档准确性**断言（同一个文件）：
+  - 每篇文档都有「最后核对」标注；
+  - `SECURITY.md` 对面板渲染方式的描述与 `pages/studio/app.js` 实现一致
+    （不得声称「不用 innerHTML」）；
+  - 文档里出现的 `ASTRBOT_*` 环境变量必须在 `conftest.py` / `e2e_smoke.py` /
+    `.cnb.yml` 里真实存在；
+  - 文档对「工具异常怎么处理」的描述与 `SuperAITool.call()` 实现一致。
 
 ## v0.2.3 — 首个正式发布版本（Release）
 

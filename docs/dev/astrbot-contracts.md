@@ -187,3 +187,7 @@ SuperAI 记录 `decayed_at`，让衰减幂等。
 
 - [开发与测试](./development.md)
 - [架构总览](./architecture.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `tests/` 与测试断言，无凭空描述）

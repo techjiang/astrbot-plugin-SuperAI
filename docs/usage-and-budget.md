@@ -80,3 +80,7 @@ Studio 面板的「用量统计」区块还会画近 7 天的柱状图（按模�
 
 - [配置手册 → 用量统计与配额](./configuration.md#用量统计与配额)
 - [Studio 面板](./studio.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai/core/metrics.py` 与测试断言，无凭空描述）

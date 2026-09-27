@@ -126,3 +126,7 @@ SuperRouter 在 `on_llm_request` 钩子上做一次决策：按「任务类型 +
 - [配置手册 → 模型路由](./configuration.md#模型路由superrouter)
 - [用量统计与成本控制](./usage-and-budget.md)
 - [FAQ：一直走同一个模型](./faq.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai/router` 与测试断言，无凭空描述）

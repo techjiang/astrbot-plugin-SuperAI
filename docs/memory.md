@@ -144,3 +144,7 @@ provider 就会把纯字符串 user 消息升级成多模态 content 数组，�
 - [配置手册 → 记忆与摘要](./configuration.md#记忆与摘要supermemory)
 - [指令手册 → 记忆](./commands.md#superai-memory)
 - [FAQ：摘要不生成](./faq.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai` 与测试断言，无凭空描述）

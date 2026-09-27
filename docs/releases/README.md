@@ -17,3 +17,7 @@
   新增加载器契约测试与真实 AstrBot 端到端联调。
 - **v0.2.1**：SuperRouter / SuperMemory / SuperAgent / 工作流 /
   用量统计 / Studio 面板首次实现。
+
+---
+
+**最后核对**：`v0.2.3`（发布说明与 `CHANGELOG.md` / `metadata.yaml` 版本号一致）

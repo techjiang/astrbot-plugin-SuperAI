@@ -74,3 +74,7 @@ AstrBot WebUI → 插件 → SuperAI → **SuperAI Studio**（`pages/studio/`）
 - 想省钱、设每日上限 → [用量统计与成本控制](./usage-and-budget.md)
 - 想加联网搜索、知识库、多步工作流 → [工具与工作流](./tools-and-workflows.md)
 - 出问题了 → [常见问题与排错](./faq.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `quickstart` 与测试断言，无凭空描述）

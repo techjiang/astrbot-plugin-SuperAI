@@ -77,3 +77,7 @@
 
 - [开发与测试](./development.md)
 - [贡献指南](../../CONTRIBUTING.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai/version.py` 与测试断言，无凭空描述）

@@ -40,3 +40,7 @@
 
 > 文档与代码不同步时，**以代码为准**，并欢迎提 Issue 指出。
 > `tests/test_docs_consistency.py` 会校验文档里的指令名与配置项是否真实存在。
+
+---
+
+**最后核对**：`v0.2.3`（本页索引与链接由 `tests/test_docs_consistency.py` 校验）

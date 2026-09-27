@@ -49,8 +49,11 @@
 
 ### 面板
 
-- Studio 前端**不裸插**动态值（`textContent`，不用 `innerHTML`），
-  `tests/test_repo_health.py` 有此断言。
+- Studio 前端渲染动态值有**两层防线**：
+  1. 所有拼接进 `innerHTML` 的值都经过 `esc()` 转义
+     （`tests/test_repo_health.py` 用正则逐条校验 `innerHTML` 插值，
+     未转义的插值会直接让 CI 红）；
+  2. 纯文本展示优先用 `textContent`。
 
 ### 输入
 

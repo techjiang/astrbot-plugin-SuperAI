@@ -30,10 +30,17 @@ git clone https://cnb.cool/asoe/TechSauce/astrbot-plugin-SuperAI.git astrbot_plu
 
 ### 如果你习惯用符号链接
 
-⚠️ `main.py` 如果是指向仓库外部的软链接，AstrBot 的加载器有概率跳过，
-表现为「插件列表里有、但什么效果都没有」。要联调开发请用
-[开发与测试](./dev/development.md) 里的 `ASTRBOT_PLUGINS_PATH` 方案，
-或直接 `cp -r` 一份进 `data/plugins/`。
+⚠️ 不建议把 `data/plugins/astrbot_plugin_superai` 做成软链接：
+加载器只按**名字**去找 `main.py` / `<dirname>.py`，
+路径解析的任何偏差都会让它判定「没有入口」并静默跳过，
+表现为「插件列表里有、但什么效果都没有」。
+
+联调开发推荐两种做法（见 [开发与测试](./dev/development.md)）：
+
+1. 把仓库目录当成插件目录 —— 直接在仓库根跑 `python scripts/e2e_smoke.py`，
+   它复刻了框架的发现与绑定逻辑；
+2. 需要跟真实 AstrBot 一起跑时，用 `cp -r` 复制一份进 `data/plugins/`
+   （或让 AstrBot 的插件目录直接指向你的开发副本）。
 
 ## 安装后必做检查
 
@@ -86,3 +93,7 @@ git pull
 
 - [快速上手](./quickstart.md)
 - [配置手册](./configuration.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `installation` 与测试断言，无凭空描述）

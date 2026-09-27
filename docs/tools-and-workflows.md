@@ -28,8 +28,10 @@ SuperAI 把能力注册为 AstrBot 的 function calling 工具，由模型按需
 - `superai_history_summary(limit?)`；
 - `superai_run_workflow(name, input?)`。
 
-工具的异常会被基类兜住并作为**工具结果**返回给模型（不会中断对话），
-这样模型可以自行决定换个方式重试。
+工具异常由 `SuperAITool.call()`（`superai/tools/base.py`）统一兜住：
+记一行 error 日志，并把
+`工具 <name> 执行失败：<异常>` 作为**工具结果**返回给模型，
+**不会中断对话**，模型可以据此换个方式重试。
 
 ## 联网搜索
 
@@ -136,3 +138,7 @@ SuperAI 把能力注册为 AstrBot 的 function calling 工具，由模型按需
 
 - [配置手册 → 工作流编排](./configuration.md#工作流编排)
 - [指令手册](./commands.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai/tools` 与测试断言，无凭空描述）

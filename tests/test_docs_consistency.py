@@ -223,3 +223,63 @@ def test_changelog_mentions_current_version():
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert f"## {__version__}" in changelog or f"## v{__version__.lstrip('v')}" in changelog
+
+
+# ---------------------------------------------------------------------------
+# 文档准确性（防止「说法与实现不符」）
+# ---------------------------------------------------------------------------
+def test_docs_have_review_stamp():
+    """每篇文档都要有「最后核对」标注。
+
+    文档的腐烂不只来自「改名了没同步」，也来自「写得比实现更漂亮」——
+    例如把转义后的 innerHTML 说成 textContent、把「异常转工具结果」
+    说成「异常被吞掉」。留下核对锚点，是为了让下次维护知道该对着什么看。
+    """
+    missing = []
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        if "**最后核对**：" not in text:
+            missing.append(str(path.relative_to(ROOT)))
+    assert not missing, "以下文档缺少「最后核对」标注：" + ", ".join(missing)
+
+
+def test_security_doc_matches_studio_escaping_implementation():
+    """SECURITY.md 对面板渲染方式的描述必须与 app.js 实现一致。
+
+    真实实现是「所有 innerHTML 插值经过 esc() 转义」，不是「不用 innerHTML」。
+    写反了会让人以为面板天然安全，从而在新代码里放心裸插。
+    """
+    app = (ROOT / "pages" / "studio" / "app.js").read_text(encoding="utf-8")
+    assert "function esc(" in app, "app.js 应存在 HTML 转义函数"
+    assert "innerHTML" in app, "app.js 使用 innerHTML 渲染（因此必须有转义防线）"
+
+    security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+    assert "esc()" in security, "SECURITY.md 必须说明 innerHTML 有 esc() 转义防线"
+    assert "不用 `innerHTML`" not in security, (
+        "SECURITY.md 不应声称面板「不用 innerHTML」——实际实现用了，靠转义兜住"
+    )
+
+
+def test_docs_do_not_reference_unknown_env_vars():
+    """文档里出现的 ASTRBOT_* 环境变量必须真的被项目使用。"""
+    sources = [
+        (ROOT / "conftest.py").read_text(encoding="utf-8"),
+        (ROOT / "scripts" / "e2e_smoke.py").read_text(encoding="utf-8"),
+        (ROOT / ".cnb.yml").read_text(encoding="utf-8"),
+    ]
+    blob = "\n".join(sources)
+    used = set(re.findall(r"ASTRBOT[A-Z_]*", blob))
+    for text_path in _all_markdown():
+        for name in re.findall(r"ASTRBOT[A-Z_]*", text_path.read_text(encoding="utf-8")):
+            assert name in used, f"{text_path.name} 引用了不存在的环境变量 {name}"
+
+
+def test_docs_tool_failure_behaviour_matches_base_class():
+    """文档对「工具异常」的描述必须与 SuperAITool.call 的实现一致。"""
+    base = (ROOT / "superai" / "tools" / "base.py").read_text(encoding="utf-8")
+    assert "except Exception as exc" in base
+    assert "工具 {self.name} 执行失败" in base, "工具异常应被转成工具结果文本"
+
+    doc = (ROOT / "docs" / "tools-and-workflows.md").read_text(encoding="utf-8")
+    assert "SuperAITool.call()" in doc, "文档应点名兜住异常的实现位置"
+    assert "作为**工具结果**返回" in doc or "作为工具结果返回" in doc

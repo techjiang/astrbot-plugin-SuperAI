@@ -113,3 +113,7 @@ metadata.yaml                 # 插件元数据
 
 - [AstrBot 集成契约](./astrbot-contracts.md)
 - [开发与测试](./development.md)
+
+---
+
+**最后核对**：`v0.2.3`（逐条对照 `superai/` 与测试断言，无凭空描述）
