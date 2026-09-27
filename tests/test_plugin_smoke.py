@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -537,11 +538,6 @@ async def test_memory_subcommands(tmp_path, monkeypatch):
     assert "已清空" in cleared[0]
     assert plugin.memory.count(session) == 0
 
-    # 兼容旧写法
-    plugin.memory.add(session, "用户喜欢 Rust 语言")
-    legacy = _texts([item async for item in plugin.superai_memory(event, "search", "Rust")])
-    assert "Rust" in legacy[0]
-
 
 @pytest.mark.asyncio
 async def test_memory_clear_requires_admin(tmp_path, monkeypatch):
@@ -601,6 +597,15 @@ async def test_api_endpoints(tmp_path, monkeypatch):
 
     tools = await plugin.api_tools()
     assert tools.status_code == 200
+    tool_payload = json.loads(tools.body)
+    # tools 保持向后兼容（纯名字列表）
+    assert isinstance(tool_payload.get("tools"), list)
+    # items 带中文用途说明，供面板展示
+    items = tool_payload.get("items")
+    assert isinstance(items, list) and items
+    for item in items:
+        assert item["name"] in tool_payload["tools"]
+        assert isinstance(item.get("description"), str)
 
     workflows = await plugin.api_workflows()
     assert workflows.status_code == 200
@@ -711,3 +716,58 @@ async def test_studio_memory_api_survives_store_failure(tmp_path, monkeypatch):
         response = await plugin.api_memory()
     assert response.status_code == 500
     assert b"disk gone" in response.body
+
+
+# ---------------------------------------------------------------------------
+# 轻量任务的模型兜底
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_summary_works_with_only_default_model(tmp_path, monkeypatch):
+    """只配了一个默认模型的用户，摘要 / 事实抽取也必须能跑。
+
+    这是最常见的情形：用户只想用记忆功能，根本不会去配 SuperRouter 的五档位。
+    如果「轻量任务」的候选链在这种情况下是空的，``agent.simple()`` 会抛
+    ``ProviderUnavailableError`` 并被吞掉，表现就是摘要与自动事实抽取
+    **静默失效** —— 用户完全看不出哪里配错了。
+    """
+    plugin, context = _make_plugin(
+        tmp_path,
+        monkeypatch,
+        router={"enabled": True, "strategy": "rule"},  # 一个档位都没配
+    )
+    assert plugin.memory_service.light_candidates() == [], "前提：档位模型确实为空"
+
+    candidates = await plugin.memory_service.resolve_light_candidates("s")
+    assert candidates == ["p-strong"], (
+        f"没有档位模型时必须兜底到会话默认模型，实际 {candidates}；否则摘要与自动事实抽取会静默失效"
+    )
+
+
+@pytest.mark.asyncio
+async def test_summary_call_reaches_provider_without_tier_config(tmp_path, monkeypatch):
+    """端到端确认：兜底之后摘要真的会去调模型（而不是直接放弃）。"""
+    plugin, context = _make_plugin(
+        tmp_path,
+        monkeypatch,
+        router={"enabled": True, "strategy": "rule"},
+    )
+    text = await plugin.memory_service.summarize("s", "用户: 你好\n助手: 你好呀")
+    assert context.generate_calls, "摘要没有发起任何模型调用；说明候选链为空，功能被静默跳过"
+    assert text
+
+
+@pytest.mark.asyncio
+async def test_explicit_tier_config_still_wins(tmp_path, monkeypatch):
+    """配了档位模型时，优先用档位模型，不要被兜底逻辑抢走（回归保护）。"""
+    plugin, _ = _make_plugin(tmp_path, monkeypatch)  # 默认配了 cheap / strong
+    candidates = await plugin.memory_service.resolve_light_candidates("s")
+    assert candidates[:2] == ["p-cheap", "p-strong"], (
+        f"配了档位时应优先用档位模型，实际 {candidates}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_provider_id_is_public(tmp_path, monkeypatch):
+    """``fallback_provider_id`` 是给 superai 包用的稳定公开入口。"""
+    plugin, _ = _make_plugin(tmp_path, monkeypatch)
+    assert await plugin.fallback_provider_id("s") == "p-strong"

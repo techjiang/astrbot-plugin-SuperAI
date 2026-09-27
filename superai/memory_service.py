@@ -57,7 +57,22 @@ class MemoryService:
 
     # -- 摘要 -------------------------------------------------------------
     def light_candidates(self) -> list[str]:
-        """「轻量任务」的候选模型链：摘要专用 → cheap → strong。"""
+        """「轻量任务」（摘要 / 事实抽取 / 工作流步骤）的候选模型链。
+
+        优先级：摘要专用模型 → ``cheap`` 档 → ``strong`` 档 → 会话默认模型。
+
+        **最后那一档兜底很关键**：只配置了一个默认模型、完全没有去配
+        SuperRouter 各档位的用户是最常见的情形（他们只想用记忆功能）。
+        此前这里只返回前三档，这种情况下候选链是**空列表**，
+        ``agent.simple()`` 会抛 ``ProviderUnavailableError``，
+        被 ``summarize()`` 吞掉后返回空串 ——
+        表现就是「滚动摘要」和「自动事实抽取」这两个主打功能**静默失效**，
+        用户完全看不出哪里配错了。
+
+        注意：兜底只用于「轻量任务」，不参与正常对话的主模型选择
+        （那部分由 :class:`~superai.router.router.SuperRouter` 负责，
+        让档位配置优先，避免抢走用户显式指定的模型）。
+        """
         config = self.plugin.config
         candidates: list[str] = []
         for pid in (
@@ -69,6 +84,14 @@ class MemoryService:
                 candidates.append(pid)
         return candidates
 
+    async def resolve_light_candidates(self, session: str = "") -> list[str]:
+        """在 :meth:`light_candidates` 基础上补上「会话 / 全局默认模型」兜底。"""
+        candidates = self.light_candidates()
+        if candidates:
+            return candidates
+        default_provider = await self.plugin.fallback_provider_id(session)
+        return [default_provider] if default_provider else []
+
     async def summarize(self, session: str, dialogue: str) -> str:
         """把对话压缩成摘要；失败时返回空字符串。"""
         if not dialogue.strip():
@@ -78,7 +101,7 @@ class MemoryService:
         try:
             text = await self.plugin.agent.simple(
                 prompt,
-                candidates=self.light_candidates(),
+                candidates=await self.resolve_light_candidates(session),
                 attempts=2,
             )
         except Exception as exc:  # noqa: BLE001 - 摘要失败不应影响对话
@@ -147,7 +170,7 @@ class MemoryService:
         try:
             raw = await self.plugin.agent.simple(
                 EXTRACT_PROMPT.format(dialogue=dialogue[:8000]),
-                candidates=self.light_candidates(),
+                candidates=await self.resolve_light_candidates(session),
                 attempts=2,
             )
             data = extract_json(raw)

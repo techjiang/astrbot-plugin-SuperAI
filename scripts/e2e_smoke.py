@@ -219,7 +219,130 @@ def main() -> None:
 
     asyncio.run(_run())
     _check("插件注册了 Studio Web API", len(ctx.registered_web_apis) > 0)
+
+    # 6) 指令路由：/superai memory <子指令> 必须命中真正的子指令
+    _check_memory_subcommands(module)
+
+    # 7) 工具归属：AstrBot 必须认为这些工具属于本插件
+    _check_tool_ownership(instance, module, ctx)
+
     print("\n🎉 端到端联调全部通过")
+
+
+def _check_memory_subcommands(module) -> None:
+    """确认 ``/superai memory list`` 不会被同名的兼容命令抢走。
+
+    这类冲突「不报错但功能全废」：两个 handler 同时命中，
+    旧的兼容命令自己跑掉，子指令组里的 list / search / clear / stats 永远执行不到。
+    """
+    from astrbot.core.star.filter.command import CommandFilter
+    from astrbot.core.star.filter.command_group import CommandGroupFilter
+    from astrbot.core.star.star_handler import EventType, star_handlers_registry
+
+    handlers = [
+        handler
+        for handler in star_handlers_registry._handlers
+        if handler.handler_module_path == module.__name__
+        and handler.event_type == EventType.AdapterMessageEvent
+    ]
+
+    class _Ev:
+        def __init__(self, text: str) -> None:
+            self.message_str = text
+            self.is_at_or_wake_command = True
+
+        def get_message_str(self) -> str:
+            return self.message_str
+
+        def get_extra(self, key, default=None):
+            return default
+
+        def set_extra(self, key, value) -> None:
+            pass
+
+    def matched(text: str) -> set[str]:
+        event = _Ev(text)
+        hits: set[str] = set()
+        for handler in handlers:
+            try:
+                if all(f.filter(event, {}) for f in handler.event_filters):
+                    hits.add(handler.handler_name)
+            except ValueError:
+                continue
+        return hits
+
+    for text, expected in (
+        ("superai memory list", "superai_memory_list"),
+        ("superai memory search 关键词", "superai_memory_search"),
+        ("superai memory clear", "superai_memory_clear_cmd"),
+        ("superai memory stats", "superai_memory_stats"),
+    ):
+        _check(
+            f"指令路由 {text!r} 命中 {expected}",
+            expected in matched(text),
+            f"实际命中 {sorted(matched(text))}",
+        )
+
+    _check(
+        "superai 指令组下不存在同名的 memory 命令（否则会抢走子指令组）",
+        not hasattr(module.SuperAIPlugin, "superai_memory"),
+    )
+
+    group_names = {
+        handler.handler_name: f.group_name
+        for handler in handlers
+        for f in handler.event_filters
+        if isinstance(f, CommandGroupFilter)
+    }
+    memory_group = next(
+        (
+            f.get_complete_command_names()
+            for handler in handlers
+            for f in handler.event_filters
+            if isinstance(f, CommandGroupFilter) and f.group_name == "memory"
+        ),
+        None,
+    )
+    _check(
+        "memory 指令组的完整指令名是 'superai memory'",
+        memory_group == ["superai memory"],
+        f"实际 {memory_group}（groups={group_names}）",
+    )
+
+    _ = CommandFilter  # 仅为说明上面复刻的是框架的 filter 语义
+
+
+def _check_tool_ownership(instance, module, ctx) -> None:
+    """确认工具的 ``handler_module_path`` 指向入口模块。
+
+    工具类定义在 ``superai/tools/*`` 子模块时，``add_llm_tools()`` 会反推出
+    顶层模块名 ``superai.tools.xxx``，插件与工具的归属关系断裂：
+    仪表盘停用插件时工具不会被一起停掉，重载时也不刷新 ``active``。
+    """
+    from astrbot.core.star.star_manager import PluginManager
+
+    tools = list(getattr(instance, "_tools", []))
+    _check("插件装配了工具", bool(tools), f"{len(tools)} 个")
+
+    wrong = [
+        f"{tool.name}={getattr(tool, 'handler_module_path', None)!r}"
+        for tool in tools
+        if getattr(tool, "handler_module_path", None) != module.__name__
+    ]
+    _check(
+        "所有工具的 handler_module_path 均为插件入口模块",
+        not wrong,
+        "，".join(wrong),
+    )
+
+    not_owned = [
+        tool.name for tool in tools if not PluginManager._is_plugin_llm_tool(tool, module.__name__)
+    ]
+    _check(
+        "框架认定所有工具属于本插件",
+        not not_owned,
+        f"未归属：{not_owned}",
+    )
 
 
 if __name__ == "__main__":

@@ -25,13 +25,28 @@ def _passthrough(*_args: Any, **_kwargs: Any):
 
 
 class _Commandable:
-    """``RegisteringCommandable`` 替身：支持 ``.command(...)`` 级联注册。"""
+    """``RegisteringCommandable`` 替身：支持 ``.command`` / ``.group`` 级联注册。
+
+    注意 ``.group(...)`` 必须返回**新的** ``_Commandable``（而不是裸装饰器），
+    因为真实实现里子指令组会继续级联注册子指令：
+
+    ```py
+    @superai_group.group("memory")
+    def superai_memory_group(): ...
+
+    @superai_memory_group.command("list")
+    async def superai_memory_list(...): ...
+    ```
+
+    ``.group(...)`` 若返回普通装饰器，上面第二段会立刻炸
+    ``AttributeError: 'function' object has no attribute 'command'``。
+    """
 
     def command(self, *_args: Any, **_kwargs: Any):  # noqa: ANN201
         return _passthrough()
 
     def group(self, *_args: Any, **_kwargs: Any):  # noqa: ANN201
-        return _passthrough()
+        return _passthrough()(lambda *_a, **_k: _Commandable())
 
     def custom_filter(self, *_args: Any, **_kwargs: Any):  # noqa: ANN201
         return _passthrough()

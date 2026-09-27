@@ -2,6 +2,123 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v0.2.3
+
+这一版继续在**真实 AstrBot 4.28.1** 上做端到端联调，又挖出四个
+「不报错、不崩溃，但功能静默失效」的问题。它们的共同特点是
+**单元测试全绿、日志没有任何异常**，只能靠与框架语义对齐的契约测试拦住。
+
+### 修复（功能性）
+
+- **`/superai memory` 子指令整体不可达**。
+  插件里同时存在两个东西：用 `@filter.command_group("superai.memory")`
+  注册的**指令组**，以及 `@superai_group.command("memory")` 注册的
+  **同名兼容命令**。AstrBot 唤醒阶段对两者的匹配语义并不互斥 ——
+  只要消息以 `superai memory` 开头，**两个 handler 都会命中**。
+  于是 `/superai memory list` / `search` / `clear` / `stats`
+  全部被那个兼容命令接走，它拿着 `action="list"`、`query=""` 自己跑掉，
+  子指令组里的实现**一次都执行不到**，而整条链路一句错都不报。
+  现在把 `memory` 改成挂在 `superai` 下的**真子组**
+  （`@superai_group.group("memory")`），并删掉同名兼容命令
+  （它本就没有存在的必要：子组的 `list` 默认行为已经覆盖了它）。
+
+- **工具与插件的归属关系断裂**。
+  `Context.add_llm_tools()` 会用
+  `_resolve_tool_handler_module_path()` 从工具类的 `__module__` 反推归属。
+  SuperAI 的工具类定义在 `superai/tools/*` 里，反推得到的是**顶层模块名**
+  `superai.tools.memory_tools` —— 既不在 `star_map` 中，也不等于插件入口模块路径。
+  后果是 `PluginManager._is_plugin_llm_tool()` 对所有 SuperAI 工具一律返回 `False`：
+  在仪表盘上**停用 / 卸载插件时，这些工具不会被一起停用**；
+  重新加载插件时也不会刷新工具的 `active` 状态。
+  现在在 `add_llm_tools()` **之后**（这一点很关键，该 API 会覆盖写入的值）
+  调用新增的 `_claim_tools()` 把 `handler_module_path` 统一改写成插件入口模块路径，
+  并在 `initialize()` 里再兜一次（`StarManager` 激活阶段会按入口模块路径重绑）。
+
+- **被拒绝的请求会污染耗时统计**。
+  `on_llm_request` 在**所有提前 `return` 之前**就把「本轮起始时间」压进了
+  `_request_started`，而 `on_llm_response` 只在真正跑完 LLM 时才会被调用。
+  于是这三条路径都会**只进不出**地泄漏记录，每来一条消息漏一条：
+
+  1. 群被 `commands.deny_groups` 拒绝；
+  2. 任务类型不在 `enabled_tasks` 白名单里；
+  3. 触发每日预算拦截。
+
+  等真正需要统计时，`_pop_request_started` 会取到很久以前那条旧时间戳，
+  单次延迟被算成**几小时** —— `/superai stats` 与 Studio 面板的
+  「平均耗时」因此彻底失真。
+  现在把压栈动作挪到所有提前 `return` 之后（那时才真正由 SuperAI 接管本轮），
+  预算拦截路径显式回收刚写入的记录；并新增
+  `REQUEST_STARTED_MAX_AGE`（1 小时）让 `_pop_request_started` 主动丢弃
+  过期残留，即使将来又出现没配对的路径也不会算出荒谬数字。
+
+- **只配了一个默认模型的用户，摘要与自动事实抽取静默失效**。
+  这是**最常见**的部署方式：用户只想用记忆功能，不会去配 SuperRouter 的五档位。
+  但「轻量任务」（滚动摘要 / 事实抽取 / 工作流步骤）的候选链此前只取
+  「摘要专用模型 → `cheap` 档 → `strong` 档」，这种情况下是**空列表**，
+  `agent.simple()` 立刻抛 `ProviderUnavailableError`，被 `summarize()` 吞掉后
+  返回空串 —— 表现就是两个主打功能一个都不工作，而日志里只有一行
+  「生成摘要失败：没有可用的模型提供商」，用户完全看不出哪里配错了。
+  现在新增 `MemoryService.resolve_light_candidates()`：档位模型全都没配时，
+  兜底到「会话 / 全局默认模型」；配了档位则仍然优先用档位模型（不给用户添乱）。
+  同时给插件补了公开的 `fallback_provider_id()`，
+  让 `superai` 包内的服务不必去碰私有方法。
+
+- **`/superai route` 展示的降级链与真实路由不一致**。
+  预览用的 primary 硬编码取 `strong` 档模型，当会话被固定为
+  `cheap` / `reasoning` / `vision` 时，展示出来的链与真正会走的链不符，
+  容易让人误以为配置没生效。现在改为跟随当前生效档位，
+  并在档位没配模型时兜到会话默认模型。
+
+### 新增
+
+- `tests/test_command_and_tool_contract.py`（11 项）：把上面两个陷阱固化成契约。
+  - 用**真实** `CommandFilter` / `CommandGroupFilter` 驱动一遍
+    `/superai memory <子指令>`，断言命中的是真正的子指令，
+    并断言 `superai` 组下不再存在同名 `memory` 命令；
+  - 断言 `memory` 组的完整指令名是 `superai memory`
+    （用 `@filter.command_group("superai.memory")` 会把组名注册成字面指令，
+    与框架 `startswith` 的匹配语义对不上）；
+  - 断言所有工具的 `handler_module_path` 等于插件入口模块路径，
+    且框架的 `_is_plugin_llm_tool()` 返回 `True`；
+  - 走一遍真实的 `FunctionToolExecutor` + `_PermissionGuardedTool`，
+    确认改写归属**没有**破坏工具执行（回归保护）。
+- `tests/test_plugin_smoke.py` 新增 4 项「轻量任务模型兜底」测试：
+  断言档位全空时 `resolve_light_candidates()` 会兜底到会话默认模型、
+  摘要**真的会去调模型**（而不是直接放弃）、配了档位时仍优先用档位模型、
+  以及 `fallback_provider_id()` 作为公开入口可用。
+- `tests/test_request_lifecycle.py`（7 项）：把「起始时间必须成对」固化成契约 ——
+  逐条覆盖被拒绝的群 / 未启用的任务类型 / 超预算三条提前返回路径，
+  断言它们**不留下**任何记录；再反向确认正常路径仍能取到真实起始时间、
+  过期记录会被丢弃、弹出操作不会误伤其它会话，
+  以及一轮完整请求记录下来的平均耗时是「毫秒级」而不是「小时级」。
+- `scripts/e2e_smoke.py` 增补两组断言：指令路由可达性、工具归属。
+  这两类问题单元测试用替身测不出来，必须由真框架联调守住。
+
+### 增强
+
+- Studio 面板与 `/tools` 接口现在会带上工具的中文用途说明
+  （`api_tools` 新增 `items` 字段，`tools` 字段保持向后兼容），
+  面板不再只显示一串英文工具名。
+- 修正 `tests/stubs/astrbot/api/provider` 里 `LLMResponse` 的替身签名：
+  真实实现是手写 `__init__` 而非 dataclass，替身写成 dataclass 会让
+  `LLMResponse(role=..., completion_text=...)` 直接抛 `TypeError`，
+  使测试在无 AstrBot 环境下以与真实行为无关的方式失败。
+
+### 其他
+
+- `tests/stubs/astrbot/api/event`：`.group(...)` 替身原先返回裸装饰器，
+  无法支持「子指令组继续级联注册子指令」的写法（`@superai_group.group("memory")`
+  之后再 `@superai_memory_group.command("list")`），会直接抛
+  `AttributeError: 'function' object has no attribute 'command'`。已修正。
+
+### 验证
+
+- `pytest tests`（真实 AstrBot 4.28.1）→ **154 passed**
+- `ASTRBOT_REF=/nonexistent pytest tests`（无 AstrBot 环境）→ 139 passed, 1 skipped
+  （新增的契约测试依赖真实框架语义，无框架时整体跳过，避免「测试绿但没测到」）
+- `ruff check .` + `ruff format --check .` → 全通过
+- `scripts/e2e_smoke.py` → 全部通过（含新增的指令路由与工具归属断言）
+
 ## v0.2.2
 
 这一版是**在真实 AstrBot 4.28.1 上跑端到端联调时挖出来的**：v0.2.1 里

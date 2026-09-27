@@ -10,7 +10,7 @@
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.5.7-blue)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.2.1-orange)](./metadata.yaml)
+[![Version](https://img.shields.io/badge/version-v0.2.3-orange)](./metadata.yaml)
 
 </div>
 
@@ -275,9 +275,31 @@ python -m pytest tests
   用 AST 扫源码把这个约束固定下来。
 - **`plain_result()` 只是「构造」结果**：它返回一个 `MessageEventResult`，
   并不会挂到事件上。要让用户真的收到话术，必须 `event.set_result(...)`。
+- **「轻量任务」必须兜底到默认模型**：滚动摘要、事实抽取、工作流步骤都不走
+  SuperRouter 的档位选择，而是走 `MemoryService.resolve_light_candidates()`。
+  只配了一个默认模型（最常见的用法）时档位链是空的，必须回落到
+  「会话 / 全局默认模型」，否则这些功能会直接抛 `ProviderUnavailableError`
+  并被上层吞掉 —— 表现就是「功能全都不工作，但日志只有一行 warning」。
 - **衰减要与调用次数无关**：维护循环会周期性跑 `memory.decay()`，衰减量必须
   按「距上次衰减的时间」计算，否则同一个时间差会被反复相乘，记忆权重会指数
   坍塌。SuperAI 因此记录 `decayed_at`，让衰减是幂等的。
+- **指令组不要与同名命令并存**：`CommandGroupFilter` 用
+  `message_str.startswith(group_names)` 匹配，`CommandFilter` 用
+  `message_str.startswith(f"{cmd} ")` 匹配 —— 两者**不是互斥**的。
+  同时注册 `superai` 组下的 `memory` 命令和 `memory` 子指令组时，
+  `/superai memory list` 会**同时**命中两个 handler，先注册/先跑的那个
+  把事件消费掉，另一个永远执行不到，而且一句错都不报。
+  子指令组必须用 `@superai_group.group("memory")` 挂在父组下面，
+  **不要**用 `@filter.command_group("superai.memory")` —— 后者会把组名注册成
+  字面指令 `superai.memory`，与框架 `startswith` 的匹配语义对不上。
+- **工具的归属模块会被 `add_llm_tools()` 重算**：该 API 用
+  `_resolve_tool_handler_module_path()` 从工具类的 `__module__` 反推插件归属。
+  工具类定义在 `superai/tools/*` 时反推结果是顶层模块名
+  `superai.tools.xxx`，既不在 `star_map` 里也不等于入口模块路径，于是
+  `_is_plugin_llm_tool()` 一律返回 `False` —— 仪表盘停用 / 卸载插件时
+  这些工具**不会被一起停掉**，重载时也不刷新 `active`。
+  修复时必须**在 `add_llm_tools()` 之后**改写 `handler_module_path`（之前写会被覆盖），
+  并在 `initialize()` 里再兜一次（`StarManager` 激活阶段会按入口模块路径重绑）。
 
 ## 局限与已知问题
 

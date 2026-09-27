@@ -180,6 +180,9 @@ class SuperAIPlugin(Star):
     async def initialize(self) -> None:
         """插件加载后的异步初始化。"""
         self._install_llm_hooks()
+        # 重新声明工具归属：StarManager 会在激活阶段按入口模块路径重绑工具，
+        # 这里再兜一次，保证「仪表盘停用插件 = 工具一起失效」成立。
+        self._claim_tools(getattr(self, "_tools", []))
         # 清理老版本误写入统计文件的聚合键（形如 last_7_days）
         try:
             if self.metrics.prune_legacy_keys():
@@ -259,19 +262,62 @@ class SuperAIPlugin(Star):
     # 工具注册
     # ------------------------------------------------------------------
     def _register_tools(self) -> None:
-        """把 SuperAI 工具注册到 AstrBot。"""
+        """把 SuperAI 工具注册到 AstrBot。
+
+        ``context.add_llm_tools()`` 会用 ``_resolve_tool_handler_module_path()``
+        从工具类的 ``__module__`` 反推「插件归属」。SuperAI 的工具类定义在
+        ``superai/tools/*`` 子模块里，反推结果是 ``superai.tools.memory_tools``
+        这种**顶层模块名**，既不在 ``star_map`` 中，也不等于插件入口模块路径。
+
+        后果（都会静默发生，不报错）：
+
+        - ``PluginManager._is_plugin_llm_tool()`` 判定为「不属于任何插件」，
+          于是在仪表盘里禁用/卸载本插件时，这些工具**不会被一起停用**，
+          重新加载插件时也不会刷新 ``active`` 状态；
+        - ``_plugin_tool_fix()`` 用 ``star_map.get(mp)`` 查不到归属，只好保守保留，
+          工具虽然还能被调用，但插件的「工具清单」与实际注册状态脱节。
+
+        这里在注册前显式把 ``handler_module_path`` 统一改成插件入口模块路径，
+        与 ``@filter`` 钩子的约束保持同一个原则。
+        """
         try:
             toolset = build_toolset(self.config)
             tools = list(toolset.tools)
         except Exception as exc:  # noqa: BLE001
             logger.error(f"[SuperAI] 工具装配失败：{exc}", exc_info=True)
             tools = []
+
         if tools:
             try:
                 self.context.add_llm_tools(*tools)
             except Exception as exc:  # noqa: BLE001 - 老版本可能不支持
                 logger.warning(f"[SuperAI] 注册 LLM 工具失败：{exc}")
+
+        # 必须在 add_llm_tools **之后** 修正：该 API 内部会用
+        # _resolve_tool_handler_module_path() 重新赋值 handler_module_path，
+        # 之前写进去的值会被它覆盖掉。
+        self._claim_tools(tools)
         self._tools = tools
+
+    def _claim_tools(self, tools: list[Any]) -> None:
+        """把工具的归属模块改成本插件入口模块（幂等，可重复调用）。
+
+        见 :meth:`_register_tools` 的说明：工具类定义在 ``superai/tools/*``
+        子模块时，AstrBot 反推出的归属路径是顶层模块名 ``superai.tools.xxx``，
+        既不在 ``star_map`` 里，也不等于插件入口模块，于是
+        ``PluginManager._is_plugin_llm_tool()`` 一律返回 ``False`` ——
+        仪表盘停用/卸载插件时这些工具不会被一起停掉，重载时也不会刷新 ``active``。
+
+        另外必须在 :meth:`initialize` 里再调一次：AstrBot 的
+        ``StarManager`` 会在插件激活时用入口模块路径做一次「重新绑定」，
+        需要 ``handler_module_path`` 已经是入口模块才能命中那个分支。
+        """
+        entry_module = self.__class__.__module__
+        for tool in tools:
+            try:
+                tool.handler_module_path = entry_module
+            except Exception:  # noqa: BLE001 - 个别工具可能是只读属性
+                logger.debug(f"[SuperAI] 无法修正工具 {getattr(tool, 'name', '?')} 的归属模块")
 
     @property
     def tool_names(self) -> list[str]:
@@ -317,6 +363,15 @@ class SuperAIPlugin(Star):
             if pid:
                 result.add(str(pid))
         return result
+
+    async def fallback_provider_id(self, session: str = "") -> str:
+        """返回「会话默认 / 全局默认」的 provider id（公开给其它模块用）。
+
+        这是没有任何档位模型可用时的最后兜底。与
+        :meth:`_current_provider_id` 是同一个实现，只是给 ``superai`` 包内的
+        服务留一个稳定的公开入口，避免它们直接依赖私有方法。
+        """
+        return await self._current_provider_id(session)
 
     async def _current_provider_id(self, session: str) -> str:
         """获取会话当前使用（或全局默认）的 provider id。"""
@@ -457,8 +512,6 @@ class SuperAIPlugin(Star):
         self._last_active_ts = int(time.time())
 
         session = event.unified_msg_origin
-        # 先把本轮开始时间记下来（统计耗时用），弹出式读取在 on_llm_response
-        self._request_started.append((session, time.time()))
 
         if not self.config.group_allowed(event.get_group_id(), is_private=event.is_private_chat()):
             return
@@ -473,6 +526,15 @@ class SuperAIPlugin(Star):
         if not self.config.is_task_enabled(self._task_kind(req, original_images)):
             return
 
+        # 0.2) 到这里才认为「本轮由 SuperAI 接管」，记录起始时间用于统计耗时。
+        #      必须放在所有提前 return 之后：``on_llm_response`` 只在真正跑完
+        #      LLM 时才会被调用，提前返回的分支永远不会把记录弹出。
+        #      之前把 append 放在最前面，被拒绝的群 / 未启用的任务类型每来一条
+        #      消息就泄漏一条记录；等真正需要统计时，``_pop_request_started``
+        #      会拿到很久以前的旧时间戳，单次延迟被算成几小时，
+        #      ``/superai stats`` 与 Studio 面板的「平均耗时」因此彻底失真。
+        self._request_started.append((session, time.time()))
+
         # 1) 预算检查
         self.metrics.flush()
         over_budget = self.metrics.check_budget(
@@ -481,6 +543,9 @@ class SuperAIPlugin(Star):
         )
         if over_budget:
             logger.warning(f"[SuperAI] {over_budget}")
+            # 本轮不会有 on_llm_response（请求根本没发出去），
+            # 要把刚记下的起始时间收回，否则会污染后续的耗时统计。
+            self._pop_request_started(session)
             # 钩子是普通协程，不能用 yield 返回结果，否则会退化成 async generator；
             # 也不能只调 plain_result()（它只是「构造」结果，不会挂到事件上），
             # 必须 set_result() 才能把话术真正发给用户。
@@ -795,14 +860,34 @@ class SuperAIPlugin(Star):
         except Exception as exc:  # noqa: BLE001 - 统计失败不影响对话
             logger.debug(f"[SuperAI] 记录用量失败：{exc}")
 
+    #: 一条「请求起始时间」记录最多被认为有效的时长（秒）。
+    #: 超过这个时长的记录一定是没配对的残留（例如提前 return 没回收、
+    #: 或插件被卸载导致 on_llm_response 从未触发），用它算耗时会得到
+    #: 几小时这种荒谬的数字，因此直接丢弃。
+    REQUEST_STARTED_MAX_AGE = 3600.0
+
     def _pop_request_started(self, session: str) -> float:
-        """取出并移除某会话最近一次的请求起始时间。"""
+        """取出并移除某会话最近一次的请求起始时间。
+
+        返回 ``0.0`` 表示「没有可用的起始时间」（调用方据此跳过耗时统计）。
+        会顺手丢弃同一会话里过期的残留记录，避免它们被当成有效起点。
+        """
+        now = time.time()
+        found = 0.0
+        stale: list[int] = []
         for index in range(len(self._request_started) - 1, -1, -1):
-            if self._request_started[index][0] == session:
-                _, started = self._request_started[index]
-                del self._request_started[index]
-                return started
-        return 0.0
+            key, started = self._request_started[index]
+            if key != session:
+                continue
+            if now - started > self.REQUEST_STARTED_MAX_AGE:
+                stale.append(index)
+                continue
+            found = started
+            del self._request_started[index]
+            break
+        for index in sorted(stale, reverse=True):
+            del self._request_started[index]
+        return found
 
     # ------------------------------------------------------------------
     # 指令：/ai
@@ -997,9 +1082,19 @@ class SuperAIPlugin(Star):
             parts.append(f"请求配额 {stats.requests}/{request_budget}")
         return "配额：" + "，".join(parts)
 
-    @filter.command_group("superai.memory", sub_command="memory")
+    @superai_group.group("memory")
     def superai_memory_group(self):
-        """记忆子指令组，支持 /superai memory list 等写法。"""
+        """记忆子指令组，支持 /superai memory list 等写法。
+
+        注意：这里必须挂在 ``superai_group`` 之下（``@superai_group.group``），
+        不能用 ``@filter.command_group("superai.memory")``。后者会把组名注册成
+        **字面指令** ``superai.memory``，与 AstrBot 的 ``CommandGroupFilter`` 用
+        ``message_str.startswith(...)`` 匹配「superai memory ...」的语义对不上 ——
+        一旦再给 ``superai_group`` 加一个同名的 ``@command("memory")``，
+        两者会在唤醒阶段同时命中，导致
+        ``/superai memory list`` 被旧的兼容指令抢走，
+        子指令组里的 list / search / clear / stats 永远执行不到。
+        """
         pass
 
     @superai_memory_group.command("list")
@@ -1063,27 +1158,6 @@ class SuperAIPlugin(Star):
             f"摘要数：{len(self.summaries.list_sessions())}"
         )
 
-    @superai_group.command("memory")
-    async def superai_memory(self, event: AstrMessageEvent, action: str = "list", query: str = ""):
-        """记忆管理（兼容旧写法）：/superai memory [list|search|clear] [关键词]"""
-        normalized = (action or "list").strip().lower()
-        if normalized in {"list", "ls"}:
-            async for result in self.superai_memory_list(event):
-                yield result
-        elif normalized in {"search", "find"}:
-            async for result in self.superai_memory_search(event, query):
-                yield result
-        elif normalized in {"clear", "reset"}:
-            async for result in self.superai_memory_clear_cmd(event):
-                yield result
-        elif normalized in {"stats", "stat"}:
-            async for result in self.superai_memory_stats(event):
-                yield result
-        else:
-            yield event.plain_result(
-                "未知操作。可选：list（列出）/ search（检索）/ clear（清空）/ stats（统计）"
-            )
-
     @superai_group.command("route")
     async def superai_route(self, event: AstrMessageEvent, tier: str = ""):
         """查看或指定路由档位：/superai route [cheap|strong|reasoning|vision|long_context|auto]"""
@@ -1101,9 +1175,18 @@ class SuperAIPlugin(Star):
             failures = self.router.health()
             if failures:
                 lines.append("失败计数：" + "，".join(f"{k}×{v}" for k, v in failures.items()))
+            # 降级链的主模型要跟「当前档位」一致。早前这里硬编码用 strong 档的
+            # 模型当 primary，会话固定为 cheap / reasoning 时展示出来的链
+            # 与真实路由结果不一致，用户会以为自己配错了。
+            active_tier = self._session_tier.get(session, "")
+            decision = self.router.decide(prompt="", session_tier=active_tier)
+            primary = decision.primary or self.config.tier_provider(decision.tier)
+            if not primary:
+                primary = await self._current_provider_id(session)
             chain = self.router.ordered_candidates(
-                self.router.decide(prompt="", session_tier=self._session_tier.get(session, "")),
-                primary=self.config.tier_provider(self._session_tier.get(session, "strong")),
+                decision,
+                primary=primary,
+                session_provider_id=await self._current_provider_id(session),
                 available_ids=self._available_provider_ids() or None,
             )
             if chain:
@@ -1361,9 +1444,28 @@ class SuperAIPlugin(Star):
             return error_response(str(exc), status_code=500)
 
     async def api_tools(self):
-        """GET /tools —— 工具列表。"""
+        """GET /tools —— 工具清单（带中文用途说明）。
+
+        同时返回 ``tools``（纯名字，保持向后兼容）与 ``items``（含说明与启用状态），
+        面板可以据此展示得更清楚，而不用把说明硬编码在前端。
+        """
         try:
-            return json_response({"tools": self.tool_names})
+            from superai.tools.registry import TOOL_LABELS
+
+            names = self.tool_names
+            return json_response(
+                {
+                    "tools": names,
+                    "items": [
+                        {
+                            "name": name,
+                            "description": TOOL_LABELS.get(name, ""),
+                            "active": True,
+                        }
+                        for name in names
+                    ],
+                }
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"[SuperAI] tools API 失败：{exc}", exc_info=True)
             return error_response(str(exc), status_code=500)

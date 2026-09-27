@@ -127,9 +127,18 @@ function renderStats(data) {
 }
 
 function renderTools(data) {
-  const tools = data.tools || [];
-  $("tools").innerHTML = tools.length
-    ? tools.map((name) => `<li>${esc(name)}</li>`).join("")
+  // items 带中文用途说明；旧后端只返回 tools（纯名字）时优雅降级
+  const items =
+    Array.isArray(data.items) && data.items.length
+      ? data.items
+      : (data.tools || []).map((name) => ({ name, description: "" }));
+  $("tools").innerHTML = items.length
+    ? items
+        .map((item) => {
+          const desc = item.description ? `：${esc(item.description)}` : "";
+          return `<li>${esc(item.name)}${desc}</li>`;
+        })
+        .join("")
     : `<li>${esc(t("pages.studio.noData", "当前未注册任何工具"))}</li>`;
 }
 
