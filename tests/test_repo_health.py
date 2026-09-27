@@ -320,3 +320,109 @@ def test_cnb_pipeline_has_tag_release_stage():
     assert "tag_push" in pipeline, "缺少 tag 触发配置"
     assert "build_plugin_zip.sh" in pipeline, "tag 流水线未构建插件 ZIP"
     assert "sync_github.sh" in pipeline, "tag 流水线未同步 GitHub 镜像"
+
+
+# ---------------------------------------------------------------------------
+# 发布包内容契约
+# ---------------------------------------------------------------------------
+#: 发布包中绝对不允许出现的东西。
+#: ``data/`` / ``shots/`` / ``mockllm/`` 都被 .gitignore 忽略，是本地运行插件
+#: 或端到端联调后留下的产物；其中 ``data/cmd_config.json`` 含 dashboard 密码哈希，
+#: ``data/data_v4.db`` 是完整运行库。它们曾经被 ``build_plugin_zip.sh``
+#: 直接 ``tar`` 工作区时误打进市场的 ZIP。
+FORBIDDEN_IN_PACKAGE = [
+    "data/",
+    "shots/",
+    "mockllm/",
+    ".git/",
+    "cmd_config.json",
+    ".db",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "/tests/",
+    "/docs/",
+    ".cnb.yml",
+]
+
+
+def _package_entries() -> list[str]:
+    import subprocess
+    import zipfile
+
+    root = ROOT
+    subprocess.run(
+        ["bash", "scripts/build_plugin_zip.sh"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    from superai.version import __version__
+
+    zip_path = root / "dist" / f"astrbot_plugin_superai-v{__version__}.zip"
+    assert zip_path.is_file(), f"打包脚本没有产出 {zip_path.name}"
+    with zipfile.ZipFile(zip_path) as archive:
+        return archive.namelist()
+
+
+@pytest.fixture(scope="module")
+def package_entries() -> list[str]:
+    return _package_entries()
+
+
+def test_package_has_no_runtime_artifacts(package_entries):
+    """发布包不得包含本地运行时产物（数据库 / 配置 / 缓存）。
+
+    回归：``build_plugin_zip.sh`` 早期直接打包**工作区**，只要维护者在打包前
+    本地跑过一次插件，``data/cmd_config.json``（含 dashboard 密码哈希）与
+    ``data/data_v4.db`` 就会被发到市场。现在改为按 ``git ls-files`` 打包，
+    并在脚本内做显性自检。
+    """
+    leaked = [
+        entry for entry in package_entries if any(bad in entry for bad in FORBIDDEN_IN_PACKAGE)
+    ]
+    assert not leaked, f"发布包混进了不该有的内容：{leaked}"
+
+
+def test_package_contains_runtime_essentials(package_entries):
+    """发布包必须齐全：入口、元数据、图标、配置 schema、全部子包。"""
+    required = [
+        "astrbot_plugin_superai/main.py",
+        "astrbot_plugin_superai/metadata.yaml",
+        "astrbot_plugin_superai/logo.png",
+        "astrbot_plugin_superai/_conf_schema.json",
+        "astrbot_plugin_superai/superai/version.py",
+        "astrbot_plugin_superai/superai/tools/registry.py",
+        "astrbot_plugin_superai/pages/studio/index.html",
+        "astrbot_plugin_superai/.astrbot-plugin/i18n/zh-CN.json",
+    ]
+    missing = [path for path in required if path not in package_entries]
+    assert not missing, f"发布包缺少必需文件：{missing}"
+
+
+def test_package_version_matches_repo(package_entries):
+    """发布包里的版本必须与仓库一致（防止打出旧包）。"""
+    import re
+    import zipfile
+
+    from superai.version import __version__
+
+    zip_path = ROOT / "dist" / f"astrbot_plugin_superai-v{__version__}.zip"
+    with zipfile.ZipFile(zip_path) as archive:
+        metadata = archive.read("astrbot_plugin_superai/metadata.yaml").decode("utf-8")
+        code = archive.read("astrbot_plugin_superai/superai/version.py").decode("utf-8")
+    assert re.search(rf"^version: v{re.escape(__version__)}$", metadata, re.M), (
+        "发布包 metadata.yaml 的版本与仓库不一致"
+    )
+    assert f'__version__ = "{__version__}"' in code, "发布包代码里的版本与仓库不一致"
+
+
+def test_build_script_is_git_driven():
+    """打包脚本必须基于 git 清单，而不是直接 tar 工作区。
+
+    这是上一处泄漏的**根因防线**：只要来源是 git 跟踪的文件，
+    .gitignore 里的任何本地产物都不可能被误打包。
+    """
+    script = (ROOT / "scripts" / "build_plugin_zip.sh").read_text(encoding="utf-8")
+    assert "git ls-files" in script, "打包脚本必须按 git 跟踪文件收集"
+    assert "禁止内容" in script or "forbidden" in script, "打包脚本必须自带泄漏自检"
